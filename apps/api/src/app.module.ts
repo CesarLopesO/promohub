@@ -8,10 +8,10 @@ import { PrismaService } from "./prisma.service";
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ["../../.env", ".env"]
-    })
+      envFilePath: ["../../.env", ".env"],
+    }),
   ],
   controllers: [AppController],
-  providers: [PrismaService]
+  providers: [PrismaService],
 })
 export class AppModule {}

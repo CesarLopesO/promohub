@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "nest start --watch",
+    "dev": "tsx watch src/main.ts",
     "build": "nest build",
     "start": "node dist/main.js",
-    "start:dev": "nest start --watch",
+    "start:dev": "tsx watch src/main.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
@@ -29,6 +29,7 @@
     "@types/node": "^22.0.0",
     "prisma": "^6.0.0",
     "source-map-support": "^0.5.21",
+    "tsx": "^4.19.0",
     "typescript": "^5.0.0"
   }
 }

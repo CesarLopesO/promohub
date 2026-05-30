@@ -5,11 +5,12 @@
     "declaration": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
-    "incremental": true,
+    "incremental": false,
     "module": "CommonJS",
     "moduleResolution": "Node",
     "noEmit": false,
     "outDir": "./dist",
+    "rootDir": "./src",
     "paths": {
       "@/*": ["./src/*"],
       "@promohub/types": ["../../packages/types/src/index.ts"],

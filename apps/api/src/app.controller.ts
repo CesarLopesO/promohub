@@ -1,14 +1,13 @@
 import { Controller, Get } from "@nestjs/common";
-import type { HealthStatus } from "@promohub/types";
 
 @Controller()
 export class AppController {
   @Get("health")
-  health(): HealthStatus {
+  health() {
     return {
       status: "ok",
       service: "promohub-api",
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     };
   }
 }
