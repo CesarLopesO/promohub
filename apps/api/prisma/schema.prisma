@@ -6,3 +6,42 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+enum WhatsAppConnectionStatus {
+  DISCONNECTED
+  CONNECTING
+  QR_READY
+  CONNECTED
+}
+
+model WhatsAppSession {
+  id             String                   @id @default(cuid())
+  userId         String                   @unique
+  status         WhatsAppConnectionStatus @default(DISCONNECTED)
+  qrCode         String?
+  qrCodeDataUrl  String?
+  phoneNumber    String?
+  connectedAt    DateTime?
+  disconnectedAt DateTime?
+  lastQrAt       DateTime?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+  authStates     WhatsAppAuthState[]
+
+  @@index([status])
+}
+
+model WhatsAppAuthState {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  keyId     String
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  session   WhatsAppSession @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@unique([userId, type, keyId])
+  @@index([userId])
+  @@index([type])
+}
