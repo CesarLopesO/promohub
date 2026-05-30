@@ -1,0 +1,25 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "declaration": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "incremental": true,
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "noEmit": false,
+    "outDir": "./dist",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@promohub/types": ["../../packages/types/src/index.ts"],
+      "@promohub/types/*": ["../../packages/types/src/*"]
+    },
+    "removeComments": true,
+    "sourceMap": true,
+    "strictPropertyInitialization": false,
+    "target": "ES2022"
+  },
+  "include": ["src/**/*.ts", "prisma/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

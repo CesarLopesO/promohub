@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "moduleResolution": "Bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@promohub/ui": ["packages/ui/src/index.ts"],
+      "@promohub/ui/*": ["packages/ui/src/*"],
+      "@promohub/shared": ["packages/shared/src/index.ts"],
+      "@promohub/shared/*": ["packages/shared/src/*"],
+      "@promohub/types": ["packages/types/src/index.ts"],
+      "@promohub/types/*": ["packages/types/src/*"]
+    }
+  }
+}

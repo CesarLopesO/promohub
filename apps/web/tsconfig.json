@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./*"],
+      "@promohub/ui": ["../../packages/ui/src/index.ts"],
+      "@promohub/ui/*": ["../../packages/ui/src/*"],
+      "@promohub/shared": ["../../packages/shared/src/index.ts"],
+      "@promohub/shared/*": ["../../packages/shared/src/*"],
+      "@promohub/types": ["../../packages/types/src/index.ts"],
+      "@promohub/types/*": ["../../packages/types/src/*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
