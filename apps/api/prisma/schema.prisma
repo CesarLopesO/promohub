@@ -29,6 +29,7 @@ model WhatsAppSession {
   updatedAt      DateTime                 @updatedAt
   authStates     WhatsAppAuthState[]
   groups         WhatsAppGroup[]
+  messages       WhatsAppMessage[]
 
   @@index([userId])
   @@index([status])
@@ -63,4 +64,84 @@ model WhatsAppGroup {
   @@unique([sessionId, groupJid])
   @@index([sessionId])
   @@index([groupJid])
+}
+
+model WhatsAppMessage {
+  id          String          @id @default(cuid())
+  sessionId   String
+  groupJid    String
+  senderJid   String?
+  messageId   String          @unique
+  messageType String
+  text        String?         @db.Text
+  hasMedia    Boolean         @default(false)
+  rawMessage  Json?
+  links       Json?
+  marketplaces Json?
+  createdAt   DateTime        @default(now())
+  session     WhatsAppSession @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([groupJid])
+  @@index([createdAt])
+}
+
+model AffiliateCredential {
+  id          String   @id @default(cuid())
+  userId      String
+  marketplace String
+  affiliateId String?
+  apiKey      String?
+  apiSecret   String?
+  trackingId  String?
+  metadata    Json?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, marketplace])
+  @@index([userId])
+  @@index([marketplace])
+}
+
+model MessageRoute {
+  id                  String   @id @default(cuid())
+  userId              String
+  sessionId           String
+  sourceGroupJid      String
+  destinationGroupJid String
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([sessionId, sourceGroupJid, destinationGroupJid])
+  @@index([userId])
+  @@index([sessionId])
+  @@index([sourceGroupJid])
+  @@index([destinationGroupJid])
+}
+
+model ForwardedMessage {
+  id                  String    @id @default(cuid())
+  userId              String
+  sessionId           String
+  sourceMessageId     String
+  sourceGroupJid      String
+  destinationGroupJid String
+  originalText        String?   @db.Text
+  rewrittenText       String    @db.Text
+  status              String
+  mode                String?
+  sentMessageType     String?
+  mediaForwarded      Boolean   @default(false)
+  error               String?   @db.Text
+  sentAt              DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([sessionId])
+  @@index([sourceMessageId])
+  @@index([destinationGroupJid])
+  @@index([status])
 }

@@ -8,6 +8,7 @@
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
     "lint": "eslint .",
+    "test": "tsc -p tsconfig.spec.json && node --test dist-test/modules/affiliate/helpers/detect-marketplace.spec.js dist-test/modules/affiliate/helpers/replace-links-in-text.spec.js dist-test/modules/affiliate/affiliate-credentials.service.spec.js dist-test/modules/affiliate/affiliate-link-rewriter.service.spec.js dist-test/modules/monitoring/monitoring.service.spec.js dist-test/modules/routes/message-routes.service.spec.js dist-test/whatsapp/messages/whatsapp-message.helpers.spec.js dist-test/whatsapp/messages/whatsapp-messages.service.spec.js",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"

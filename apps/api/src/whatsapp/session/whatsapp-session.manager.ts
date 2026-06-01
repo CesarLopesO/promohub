@@ -21,6 +21,7 @@ import type { WhatsAppSession } from "@prisma/client";
 import { PrismaService } from "../../prisma.service";
 import { BaileysPrismaAuthStore } from "../auth/baileys-prisma-auth.store";
 import type { WhatsAppSessionStatusDto } from "../dto/whatsapp-session-status.dto";
+import { WhatsAppMessagesService } from "../messages/whatsapp-messages.service";
 import { WhatsAppSessionCacheService } from "./whatsapp-session-cache.service";
 
 type ManagedSession = {
@@ -44,6 +45,7 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly authStore: BaileysPrismaAuthStore,
     private readonly cache: WhatsAppSessionCacheService,
+    private readonly messagesService: WhatsAppMessagesService,
   ) {}
 
   async onModuleInit() {
@@ -240,6 +242,16 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
 
     this.sessions.set(session.sessionId, { socket });
     socket.ev.on("creds.update", saveCreds);
+    socket.ev.on("messages.upsert", ({ messages }) => {
+      void Promise.all(
+        messages.map((message) =>
+          this.messagesService.recordIncomingGroupMessage(
+            session.sessionId,
+            message,
+          ),
+        ),
+      ).catch(() => undefined);
+    });
     socket.ev.on("connection.update", (update) => {
       void this.handleConnectionUpdate(session.sessionId, socket, update);
     });

@@ -1,0 +1,220 @@
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
+import { Prisma } from "@prisma/client";
+
+import { PrismaService } from "../../prisma.service";
+import type { CreateAffiliateCredentialDto } from "./dto/create-affiliate-credential.dto";
+import type { UpdateAffiliateCredentialDto } from "./dto/update-affiliate-credential.dto";
+import { Marketplace } from "./helpers/detect-marketplace";
+
+export type AffiliateCredentialDto = {
+  id: string;
+  userId: string;
+  marketplace: Marketplace;
+  affiliateId?: string;
+  apiKey?: string;
+  apiSecret?: string;
+  trackingId?: string;
+  metadata?: unknown;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+@Injectable()
+export class AffiliateCredentialsService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async create(
+    body: CreateAffiliateCredentialDto,
+  ): Promise<AffiliateCredentialDto> {
+    const userId = this.normalizeRequiredString(body.userId, "userId");
+    const marketplace = this.normalizeMarketplace(body.marketplace);
+    const data = this.toCredentialData(body);
+
+    const credential = await this.prisma.affiliateCredential.upsert({
+      where: {
+        userId_marketplace: {
+          userId,
+          marketplace,
+        },
+      },
+      create: {
+        userId,
+        marketplace,
+        ...data,
+        isActive: true,
+      },
+      update: {
+        ...data,
+        isActive: true,
+      },
+    });
+
+    return this.toDto(credential);
+  }
+
+  async list(userId?: string): Promise<AffiliateCredentialDto[]> {
+    const credentials = await this.prisma.affiliateCredential.findMany({
+      where: {
+        isActive: true,
+        ...(userId?.trim()
+          ? {
+              userId: userId.trim(),
+            }
+          : {}),
+      },
+      orderBy: [
+        {
+          marketplace: "asc",
+        },
+        {
+          createdAt: "asc",
+        },
+      ],
+    });
+
+    return credentials.map((credential) => this.toDto(credential));
+  }
+
+  async findOne(id: string): Promise<AffiliateCredentialDto> {
+    const credential = await this.findCredential(id);
+
+    return this.toDto(credential);
+  }
+
+  async update(
+    id: string,
+    body: UpdateAffiliateCredentialDto,
+  ): Promise<AffiliateCredentialDto> {
+    const credential = await this.findCredential(id);
+    const data = this.toCredentialData(body);
+    const marketplace =
+      body.marketplace === undefined
+        ? credential.marketplace
+        : this.normalizeMarketplace(body.marketplace);
+
+    const updated = await this.prisma.affiliateCredential.update({
+      where: {
+        id: credential.id,
+      },
+      data: {
+        ...data,
+        marketplace,
+        ...(body.isActive === undefined ? {} : { isActive: body.isActive }),
+      },
+    });
+
+    return this.toDto(updated);
+  }
+
+  async softDelete(id: string): Promise<AffiliateCredentialDto> {
+    const credential = await this.findCredential(id);
+    const updated = await this.prisma.affiliateCredential.update({
+      where: {
+        id: credential.id,
+      },
+      data: {
+        isActive: false,
+      },
+    });
+
+    return this.toDto(updated);
+  }
+
+  private async findCredential(id: string) {
+    const normalizedId = this.normalizeRequiredString(id, "id");
+    const credential = await this.prisma.affiliateCredential.findUnique({
+      where: {
+        id: normalizedId,
+      },
+    });
+
+    if (!credential) {
+      throw new NotFoundException("Affiliate credential not found.");
+    }
+
+    return credential;
+  }
+
+  private toCredentialData(
+    body: CreateAffiliateCredentialDto | UpdateAffiliateCredentialDto,
+  ) {
+    return {
+      ...(body.affiliateId === undefined
+        ? {}
+        : { affiliateId: this.normalizeNullableString(body.affiliateId) }),
+      ...(body.apiKey === undefined
+        ? {}
+        : { apiKey: this.normalizeNullableString(body.apiKey) }),
+      ...(body.apiSecret === undefined
+        ? {}
+        : { apiSecret: this.normalizeNullableString(body.apiSecret) }),
+      ...(body.trackingId === undefined
+        ? {}
+        : { trackingId: this.normalizeNullableString(body.trackingId) }),
+      ...(body.metadata === undefined
+        ? {}
+        : { metadata: this.toJson(body.metadata) }),
+    };
+  }
+
+  private toDto(credential: {
+    id: string;
+    userId: string;
+    marketplace: string;
+    affiliateId: string | null;
+    apiKey: string | null;
+    apiSecret: string | null;
+    trackingId: string | null;
+    metadata: Prisma.JsonValue | null;
+    isActive: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  }): AffiliateCredentialDto {
+    return {
+      id: credential.id,
+      userId: credential.userId,
+      marketplace: this.normalizeMarketplace(credential.marketplace),
+      affiliateId: credential.affiliateId ?? undefined,
+      apiKey: credential.apiKey ?? undefined,
+      apiSecret: credential.apiSecret ?? undefined,
+      trackingId: credential.trackingId ?? undefined,
+      metadata: credential.metadata ?? undefined,
+      isActive: credential.isActive,
+      createdAt: credential.createdAt,
+      updatedAt: credential.updatedAt,
+    };
+  }
+
+  private normalizeMarketplace(value: string): Marketplace {
+    if (!Object.values(Marketplace).includes(value as Marketplace)) {
+      throw new BadRequestException("Invalid marketplace.");
+    }
+
+    return value as Marketplace;
+  }
+
+  private normalizeRequiredString(value: string, fieldName: string): string {
+    if (!value || typeof value !== "string" || !value.trim()) {
+      throw new BadRequestException(`Field ${fieldName} is required.`);
+    }
+
+    return value.trim();
+  }
+
+  private normalizeNullableString(value: string | null): string | null {
+    if (value === null) {
+      return null;
+    }
+
+    return value.trim() || null;
+  }
+
+  private toJson(value: unknown): Prisma.InputJsonValue {
+    return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  }
+}
