@@ -1,30 +1,41 @@
-import { Body, Controller, Get, Inject, Param, Post } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Inject,
+  Param,
+  Post,
+} from "@nestjs/common";
 
 import { ConnectWhatsAppDto } from "./dto/connect-whatsapp.dto";
 import type { WhatsAppSessionStatusDto } from "./dto/whatsapp-session-status.dto";
 import { WhatsAppSessionManager } from "./session/whatsapp-session.manager";
 
-@Controller("whatsapp/sessions")
+@Controller("whatsapp/session")
 export class WhatsAppSessionController {
   constructor(
     @Inject(WhatsAppSessionManager)
     private readonly sessionManager: WhatsAppSessionManager,
   ) {}
 
-  @Post("connect")
-  connect(@Body() body: ConnectWhatsAppDto): Promise<WhatsAppSessionStatusDto> {
-    return this.sessionManager.connect(body.userId);
+  @Post()
+  create(@Body() body: ConnectWhatsAppDto): Promise<WhatsAppSessionStatusDto> {
+    return this.sessionManager.createSession(body.userId, body.sessionId);
   }
 
-  @Get(":userId/status")
-  status(@Param("userId") userId: string): Promise<WhatsAppSessionStatusDto> {
-    return this.sessionManager.readStatus(userId);
+  @Get(":id/status")
+  status(@Param("id") id: string): Promise<WhatsAppSessionStatusDto> {
+    return this.sessionManager.readStatus(id);
   }
 
-  @Post(":userId/disconnect")
-  disconnect(
-    @Param("userId") userId: string,
-  ): Promise<WhatsAppSessionStatusDto> {
-    return this.sessionManager.disconnect(userId);
+  @Get(":id/qr")
+  qr(@Param("id") id: string) {
+    return this.sessionManager.readQr(id);
+  }
+
+  @Delete(":id")
+  delete(@Param("id") id: string): Promise<WhatsAppSessionStatusDto> {
+    return this.sessionManager.deleteSession(id);
   }
 }

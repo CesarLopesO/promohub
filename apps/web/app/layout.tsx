@@ -3,11 +3,11 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "PROMOHUB",
-  description: "Automacao para afiliados Amazon e Mercado Livre"
+  description: "Automacao para afiliados Amazon e Mercado Livre",
 };
 
 export default function RootLayout({
-  children
+  children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {

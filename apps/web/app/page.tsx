@@ -6,18 +6,18 @@ const statusItems = [
   {
     label: "Web",
     detail: "Next.js 15",
-    icon: Activity
+    icon: Activity,
   },
   {
     label: "API",
     detail: "NestJS",
-    icon: Server
+    icon: Server,
   },
   {
     label: "Dados",
     detail: "PostgreSQL + Redis",
-    icon: Database
-  }
+    icon: Database,
+  },
 ];
 
 export default function Home() {
@@ -37,7 +37,11 @@ export default function Home() {
           </p>
           <div className="mt-8">
             <Button asChild>
-              <a href={process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001"}>
+              <a
+                href={
+                  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001"
+                }
+              >
                 Abrir API
               </a>
             </Button>

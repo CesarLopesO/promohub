@@ -16,7 +16,9 @@
       "@promohub/shared/*": ["../../packages/shared/src/*"],
       "@promohub/types": ["../../packages/types/src/index.ts"],
       "@promohub/types/*": ["../../packages/types/src/*"]
-    }
+    },
+    "module": "esnext",
+    "isolatedModules": true
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
   "exclude": ["node_modules"]

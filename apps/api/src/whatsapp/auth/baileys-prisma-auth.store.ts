@@ -18,16 +18,16 @@ const CREDS_KEY_ID = "creds";
 export class BaileysPrismaAuthStore {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getAuthState(userId: string): Promise<{
+  async getAuthState(sessionId: string): Promise<{
     state: AuthenticationState;
     saveCreds: () => Promise<void>;
     clear: () => Promise<void>;
   }> {
-    let creds = await this.readCreds(userId);
+    let creds = await this.readCreds(sessionId);
 
     if (!creds) {
       creds = initAuthCreds();
-      await this.writeAuthValue(userId, CREDS_TYPE, CREDS_KEY_ID, creds);
+      await this.writeAuthValue(sessionId, CREDS_TYPE, CREDS_KEY_ID, creds);
     }
 
     const state: AuthenticationState = {
@@ -39,7 +39,7 @@ export class BaileysPrismaAuthStore {
         ) => {
           const records = await this.prisma.whatsAppAuthState.findMany({
             where: {
-              userId,
+              sessionId,
               type,
               keyId: {
                 in: ids,
@@ -65,7 +65,7 @@ export class BaileysPrismaAuthStore {
                 operations.push(
                   this.prisma.whatsAppAuthState.deleteMany({
                     where: {
-                      userId,
+                      sessionId,
                       type,
                       keyId,
                     },
@@ -74,7 +74,9 @@ export class BaileysPrismaAuthStore {
                 continue;
               }
 
-              operations.push(this.writeAuthValue(userId, type, keyId, value));
+              operations.push(
+                this.writeAuthValue(sessionId, type, keyId, value),
+              );
             }
           }
 
@@ -83,7 +85,7 @@ export class BaileysPrismaAuthStore {
           }
         },
         clear: async () => {
-          await this.clear(userId);
+          await this.clear(sessionId);
         },
       },
     };
@@ -92,33 +94,33 @@ export class BaileysPrismaAuthStore {
       state,
       saveCreds: async () => {
         await this.writeAuthValue(
-          userId,
+          sessionId,
           CREDS_TYPE,
           CREDS_KEY_ID,
           state.creds,
         );
       },
       clear: async () => {
-        await this.clear(userId);
+        await this.clear(sessionId);
       },
     };
   }
 
-  async clear(userId: string): Promise<void> {
+  async clear(sessionId: string): Promise<void> {
     await this.prisma.whatsAppAuthState.deleteMany({
       where: {
-        userId,
+        sessionId,
       },
     });
   }
 
   private async readCreds(
-    userId: string,
+    sessionId: string,
   ): Promise<AuthenticationCreds | undefined> {
     const record = await this.prisma.whatsAppAuthState.findUnique({
       where: {
-        userId_type_keyId: {
-          userId,
+        sessionId_type_keyId: {
+          sessionId,
           type: CREDS_TYPE,
           keyId: CREDS_KEY_ID,
         },
@@ -133,7 +135,7 @@ export class BaileysPrismaAuthStore {
   }
 
   private writeAuthValue(
-    userId: string,
+    sessionId: string,
     type: string,
     keyId: string,
     value: unknown,
@@ -142,14 +144,14 @@ export class BaileysPrismaAuthStore {
 
     return this.prisma.whatsAppAuthState.upsert({
       where: {
-        userId_type_keyId: {
-          userId,
+        sessionId_type_keyId: {
+          sessionId,
           type,
           keyId,
         },
       },
       create: {
-        userId,
+        sessionId,
         type,
         keyId,
         value: serialized,

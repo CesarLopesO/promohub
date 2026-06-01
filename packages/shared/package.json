@@ -8,7 +8,7 @@
     "./env": "./src/env.ts"
   },
   "scripts": {
-    "build": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },

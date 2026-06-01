@@ -9,7 +9,7 @@
     "./utils": "./src/lib/utils.ts"
   },
   "scripts": {
-    "build": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },

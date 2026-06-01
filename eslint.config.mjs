@@ -8,32 +8,33 @@ export default tseslint.config(
       "**/node_modules/**",
       "**/dist/**",
       "**/.next/**",
+      "**/next-env.d.ts",
       "**/coverage/**",
-      "**/generated/**"
-    ]
+      "**/generated/**",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
     files: ["apps/web/**/*.{ts,tsx}"],
     plugins: {
-      "@next/next": nextPlugin
+      "@next/next": nextPlugin,
     },
     rules: {
       ...nextPlugin.configs.recommended.rules,
-      ...nextPlugin.configs["core-web-vitals"].rules
-    }
+      ...nextPlugin.configs["core-web-vitals"].rules,
+    },
   },
   {
     files: ["**/*.{js,mjs,cjs}"],
     rules: {
-      "@typescript-eslint/no-var-requires": "off"
-    }
+      "@typescript-eslint/no-var-requires": "off",
+    },
   },
   {
     files: ["**/*.{ts,tsx}"],
     rules: {
-      "no-undef": "off"
-    }
-  }
+      "no-undef": "off",
+    },
+  },
 );

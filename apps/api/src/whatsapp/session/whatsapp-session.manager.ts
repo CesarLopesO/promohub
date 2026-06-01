@@ -3,20 +3,23 @@ import {
   Injectable,
   NotFoundException,
   OnModuleDestroy,
+  OnModuleInit,
 } from "@nestjs/common";
+import { Boom } from "@hapi/boom";
 import makeWASocket, {
   DEFAULT_CONNECTION_CONFIG,
   DisconnectReason,
   type ConnectionState,
   type WASocket,
 } from "@whiskeysockets/baileys";
-import { Boom } from "@hapi/boom";
 import pino from "pino";
 import QRCode from "qrcode";
+import { randomUUID } from "crypto";
 
 import { PrismaService } from "../../prisma.service";
 import { BaileysPrismaAuthStore } from "../auth/baileys-prisma-auth.store";
 import type { WhatsAppSessionStatusDto } from "../dto/whatsapp-session-status.dto";
+import { WhatsAppSessionCacheService } from "./whatsapp-session-cache.service";
 
 type ManagedSession = {
   socket: WASocket;
@@ -27,7 +30,7 @@ type ManagedSession = {
 const QR_WAIT_TIMEOUT_MS = 25_000;
 
 @Injectable()
-export class WhatsAppSessionManager implements OnModuleDestroy {
+export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly pendingStarts = new Map<
     string,
@@ -38,83 +41,94 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authStore: BaileysPrismaAuthStore,
+    private readonly cache: WhatsAppSessionCacheService,
   ) {}
 
-  async connect(userId: string): Promise<WhatsAppSessionStatusDto> {
-    const normalizedUserId = this.normalizeUserId(userId);
-    const existing = this.sessions.get(normalizedUserId);
-
-    if (existing) {
-      return this.readStatus(normalizedUserId);
-    }
-
-    const pending = this.pendingStarts.get(normalizedUserId);
-
-    if (pending) {
-      return pending;
-    }
-
-    const startPromise = this.startSession(normalizedUserId);
-    this.pendingStarts.set(normalizedUserId, startPromise);
-
-    try {
-      return await startPromise;
-    } finally {
-      this.pendingStarts.delete(normalizedUserId);
-    }
-  }
-
-  async readStatus(userId: string): Promise<WhatsAppSessionStatusDto> {
-    const normalizedUserId = this.normalizeUserId(userId);
-    const session = await this.prisma.whatsAppSession.findUnique({
+  async onModuleInit() {
+    const sessions = await this.prisma.whatsAppSession.findMany({
       where: {
-        userId: normalizedUserId,
+        status: {
+          in: ["CONNECTING", "QR_READY", "CONNECTED"],
+        },
       },
     });
 
-    if (!session) {
-      return {
-        userId: normalizedUserId,
-        status: "DISCONNECTED",
-      };
+    for (const session of sessions) {
+      void this.startRuntime(session.sessionId).catch(() => undefined);
+    }
+  }
+
+  async createSession(
+    userId: string,
+    requestedSessionId?: string,
+  ): Promise<WhatsAppSessionStatusDto> {
+    const normalizedUserId = this.normalizeRequiredString(userId, "userId");
+    const sessionId =
+      requestedSessionId?.trim() || `wa_${randomUUID().replace(/-/g, "")}`;
+
+    const existing = await this.prisma.whatsAppSession.findUnique({
+      where: {
+        sessionId,
+      },
+    });
+
+    if (existing) {
+      throw new BadRequestException("sessionId already exists.");
     }
 
+    await this.prisma.whatsAppSession.create({
+      data: {
+        userId: normalizedUserId,
+        sessionId,
+        status: "CONNECTING",
+      },
+    });
+
+    return this.startRuntime(sessionId);
+  }
+
+  async readStatus(id: string): Promise<WhatsAppSessionStatusDto> {
+    const session = await this.findSessionById(id);
+
+    const status = this.toStatusDto(session);
+    await this.cache.setSession(status);
+
+    return status;
+  }
+
+  async readQr(id: string): Promise<{
+    id: string;
+    sessionId: string;
+    status: WhatsAppSessionStatusDto["status"];
+    qrCode?: string;
+    qrCodeDataUrl?: string;
+  }> {
+    const session = await this.findSessionById(id);
+
     return {
-      userId: session.userId,
+      id: session.id,
+      sessionId: session.sessionId,
       status: session.status,
+      qrCode: session.qrCode ?? undefined,
       qrCodeDataUrl: session.qrCodeDataUrl ?? undefined,
-      phoneNumber: session.phoneNumber ?? undefined,
-      connectedAt: session.connectedAt ?? undefined,
-      disconnectedAt: session.disconnectedAt ?? undefined,
-      updatedAt: session.updatedAt,
     };
   }
 
-  async disconnect(userId: string): Promise<WhatsAppSessionStatusDto> {
-    const normalizedUserId = this.normalizeUserId(userId);
-    const managed = this.sessions.get(normalizedUserId);
+  async deleteSession(id: string): Promise<WhatsAppSessionStatusDto> {
+    const session = await this.findSessionById(id);
+    const managed = this.sessions.get(session.sessionId);
 
     if (managed) {
       await managed.socket.logout().catch(() => undefined);
       managed.socket.end(undefined);
-      this.sessions.delete(normalizedUserId);
+      this.sessions.delete(session.sessionId);
     }
 
-    await this.authStore.clear(normalizedUserId);
+    await this.authStore.clear(session.sessionId);
 
-    const session = await this.prisma.whatsAppSession.findUnique({
+    const updated = await this.prisma.whatsAppSession.update({
       where: {
-        userId: normalizedUserId,
-      },
-    });
-
-    if (!session) {
-      throw new NotFoundException("WhatsApp session not found.");
-    }
-
-    await this.prisma.whatsAppSession.update({
-      where: {
-        userId: normalizedUserId,
+        id: session.id,
       },
       data: {
         status: "DISCONNECTED",
@@ -126,7 +140,11 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
       },
     });
 
-    return this.readStatus(normalizedUserId);
+    const status = this.toStatusDto(updated);
+    await this.cache.deleteSession(session.id);
+    await this.cache.setSession(status);
+
+    return status;
   }
 
   async onModuleDestroy() {
@@ -137,24 +155,47 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
     this.sessions.clear();
   }
 
-  private async startSession(
-    userId: string,
+  private async startRuntime(
+    sessionId: string,
   ): Promise<WhatsAppSessionStatusDto> {
-    await this.prisma.whatsAppSession.upsert({
+    const pending = this.pendingStarts.get(sessionId);
+
+    if (pending) {
+      return pending;
+    }
+
+    const existing = this.sessions.get(sessionId);
+
+    if (existing) {
+      return this.readStatusBySessionId(sessionId);
+    }
+
+    const startPromise = this.bootSocket(sessionId);
+    this.pendingStarts.set(sessionId, startPromise);
+
+    try {
+      return await startPromise;
+    } finally {
+      this.pendingStarts.delete(sessionId);
+    }
+  }
+
+  private async bootSocket(
+    sessionId: string,
+  ): Promise<WhatsAppSessionStatusDto> {
+    const session = await this.prisma.whatsAppSession.update({
       where: {
-        userId,
+        sessionId,
       },
-      create: {
-        userId,
-        status: "CONNECTING",
-      },
-      update: {
+      data: {
         status: "CONNECTING",
         disconnectedAt: null,
       },
     });
 
-    const { state, saveCreds } = await this.authStore.getAuthState(userId);
+    const { state, saveCreds } = await this.authStore.getAuthState(
+      session.sessionId,
+    );
     const socket = makeWASocket({
       auth: state,
       logger: this.logger,
@@ -163,21 +204,21 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
       version: DEFAULT_CONNECTION_CONFIG.version,
     });
 
-    this.sessions.set(userId, { socket });
+    this.sessions.set(session.sessionId, { socket });
     socket.ev.on("creds.update", saveCreds);
     socket.ev.on("connection.update", (update) => {
-      void this.handleConnectionUpdate(userId, socket, update);
+      void this.handleConnectionUpdate(session.sessionId, socket, update);
     });
 
-    return this.waitForQrOrConnection(userId);
+    return this.waitForQrOrConnection(session.sessionId);
   }
 
   private async handleConnectionUpdate(
-    userId: string,
+    sessionId: string,
     socket: WASocket,
     update: Partial<ConnectionState>,
   ): Promise<void> {
-    const managed = this.sessions.get(userId);
+    const managed = this.sessions.get(sessionId);
 
     if (update.qr) {
       const qrCodeDataUrl = await QRCode.toDataURL(update.qr);
@@ -187,9 +228,9 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
         managed.qrCodeDataUrl = qrCodeDataUrl;
       }
 
-      await this.prisma.whatsAppSession.update({
+      const session = await this.prisma.whatsAppSession.update({
         where: {
-          userId,
+          sessionId,
         },
         data: {
           status: "QR_READY",
@@ -198,12 +239,17 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
           lastQrAt: new Date(),
         },
       });
+      await this.cache.setQr(session.id, {
+        qrCode: update.qr,
+        qrCodeDataUrl,
+      });
+      await this.cache.setSession(this.toStatusDto(session));
     }
 
     if (update.connection === "open") {
-      await this.prisma.whatsAppSession.update({
+      const session = await this.prisma.whatsAppSession.update({
         where: {
-          userId,
+          sessionId,
         },
         data: {
           status: "CONNECTED",
@@ -214,17 +260,19 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
           disconnectedAt: null,
         },
       });
+      await this.cache.deleteSession(session.id);
+      await this.cache.setSession(this.toStatusDto(session));
     }
 
     if (update.connection === "close") {
       const statusCode = this.readDisconnectStatusCode(update);
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-      this.sessions.delete(userId);
+      this.sessions.delete(sessionId);
 
-      await this.prisma.whatsAppSession.update({
+      const session = await this.prisma.whatsAppSession.update({
         where: {
-          userId,
+          sessionId,
         },
         data: {
           status: "DISCONNECTED",
@@ -233,22 +281,24 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
           disconnectedAt: new Date(),
         },
       });
+      await this.cache.deleteSession(session.id);
+      await this.cache.setSession(this.toStatusDto(session));
 
       if (shouldReconnect) {
-        void this.connect(userId).catch(() => undefined);
+        void this.startRuntime(sessionId).catch(() => undefined);
       } else {
-        await this.authStore.clear(userId);
+        await this.authStore.clear(sessionId);
       }
     }
   }
 
   private async waitForQrOrConnection(
-    userId: string,
+    sessionId: string,
   ): Promise<WhatsAppSessionStatusDto> {
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < QR_WAIT_TIMEOUT_MS) {
-      const status = await this.readStatus(userId);
+      const status = await this.readStatusBySessionId(sessionId);
 
       if (status.status === "QR_READY" || status.status === "CONNECTED") {
         return status;
@@ -257,7 +307,67 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
 
-    return this.readStatus(userId);
+    return this.readStatusBySessionId(sessionId);
+  }
+
+  private async readStatusBySessionId(
+    sessionId: string,
+  ): Promise<WhatsAppSessionStatusDto> {
+    const session = await this.prisma.whatsAppSession.findUnique({
+      where: {
+        sessionId,
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException("WhatsApp session not found.");
+    }
+
+    const status = this.toStatusDto(session);
+    await this.cache.setSession(status);
+
+    return status;
+  }
+
+  private async findSessionById(id: string) {
+    const normalizedId = this.normalizeRequiredString(id, "id");
+    const session = await this.prisma.whatsAppSession.findUnique({
+      where: {
+        id: normalizedId,
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException("WhatsApp session not found.");
+    }
+
+    return session;
+  }
+
+  private toStatusDto(session: {
+    id: string;
+    userId: string;
+    sessionId: string;
+    status: WhatsAppSessionStatusDto["status"];
+    qrCode: string | null;
+    qrCodeDataUrl: string | null;
+    phoneNumber: string | null;
+    connectedAt: Date | null;
+    disconnectedAt: Date | null;
+    updatedAt: Date;
+  }): WhatsAppSessionStatusDto {
+    return {
+      id: session.id,
+      userId: session.userId,
+      sessionId: session.sessionId,
+      status: session.status,
+      qrCode: session.qrCode ?? undefined,
+      qrCodeDataUrl: session.qrCodeDataUrl ?? undefined,
+      phoneNumber: session.phoneNumber ?? undefined,
+      connectedAt: session.connectedAt ?? undefined,
+      disconnectedAt: session.disconnectedAt ?? undefined,
+      updatedAt: session.updatedAt,
+    };
   }
 
   private readDisconnectStatusCode(update: Partial<ConnectionState>) {
@@ -270,11 +380,11 @@ export class WhatsAppSessionManager implements OnModuleDestroy {
     return undefined;
   }
 
-  private normalizeUserId(userId: string): string {
-    if (!userId || typeof userId !== "string" || !userId.trim()) {
-      throw new BadRequestException("Field userId is required.");
+  private normalizeRequiredString(value: string, fieldName: string): string {
+    if (!value || typeof value !== "string" || !value.trim()) {
+      throw new BadRequestException(`Field ${fieldName} is required.`);
     }
 
-    return userId.trim();
+    return value.trim();
   }
 }

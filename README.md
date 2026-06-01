@@ -1,6 +1,6 @@
 # PROMOHUB
 
-PROMOHUB é um SaaS de automação para afiliados Amazon e Mercado Livre.
+PROMOHUB é um SaaS de automação para afiliados com foco em grupos WhatsApp.
 
 Este repositório usa Turborepo com apps Next.js e NestJS, pacotes compartilhados, PostgreSQL, Redis, Prisma, ESLint, Prettier, Husky e Commitlint.
 
@@ -73,6 +73,26 @@ Esse comando inicia PostgreSQL, Redis, API e Web.
 - `npm run format`: formata arquivos com Prettier.
 - `npm run db:generate`: gera Prisma Client.
 - `npm run db:migrate`: executa migrações Prisma na API.
+
+## WhatsApp Session Manager
+
+Endpoints disponíveis na API:
+
+```http
+POST /whatsapp/sessions/connect
+GET /whatsapp/sessions/:userId/status
+POST /whatsapp/sessions/:userId/disconnect
+```
+
+Payload para iniciar uma conexão:
+
+```json
+{
+  "userId": "user-id"
+}
+```
+
+Cada `userId` possui uma sessão WhatsApp própria. As credenciais do Baileys e chaves de autenticação são persistidas no PostgreSQL para manter a sessão após reinícios da API.
 
 ## Commits
 
