@@ -28,6 +28,7 @@ model WhatsAppSession {
   createdAt      DateTime                 @default(now())
   updatedAt      DateTime                 @updatedAt
   authStates     WhatsAppAuthState[]
+  groups         WhatsAppGroup[]
 
   @@index([userId])
   @@index([status])
@@ -46,4 +47,20 @@ model WhatsAppAuthState {
   @@unique([sessionId, type, keyId])
   @@index([sessionId])
   @@index([type])
+}
+
+model WhatsAppGroup {
+  id               String          @id @default(cuid())
+  sessionId        String
+  groupJid         String
+  name             String
+  participantCount Int             @default(0)
+  isCommunity      Boolean         @default(false)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  session          WhatsAppSession @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+
+  @@unique([sessionId, groupJid])
+  @@index([sessionId])
+  @@index([groupJid])
 }

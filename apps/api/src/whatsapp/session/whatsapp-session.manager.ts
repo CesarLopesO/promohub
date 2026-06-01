@@ -4,6 +4,7 @@ import {
   NotFoundException,
   OnModuleDestroy,
   OnModuleInit,
+  ServiceUnavailableException,
 } from "@nestjs/common";
 import { Boom } from "@hapi/boom";
 import makeWASocket, {
@@ -15,6 +16,7 @@ import makeWASocket, {
 import pino from "pino";
 import QRCode from "qrcode";
 import { randomUUID } from "crypto";
+import type { WhatsAppSession } from "@prisma/client";
 
 import { PrismaService } from "../../prisma.service";
 import { BaileysPrismaAuthStore } from "../auth/baileys-prisma-auth.store";
@@ -111,6 +113,38 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
       status: session.status,
       qrCode: session.qrCode ?? undefined,
       qrCodeDataUrl: session.qrCodeDataUrl ?? undefined,
+    };
+  }
+
+  async getConnectedSocket(id: string): Promise<{
+    session: WhatsAppSession;
+    socket: WASocket;
+  }> {
+    let session = await this.findSessionById(id);
+
+    if (session.status !== "CONNECTED") {
+      throw new BadRequestException(
+        "WhatsApp session is not connected yet. Scan the QR Code before syncing groups.",
+      );
+    }
+
+    let managed = this.sessions.get(session.sessionId);
+
+    if (!managed) {
+      await this.startRuntime(session.sessionId);
+      session = await this.findSessionById(id);
+      managed = this.sessions.get(session.sessionId);
+    }
+
+    if (session.status !== "CONNECTED" || !managed) {
+      throw new ServiceUnavailableException(
+        "WhatsApp session is reconnecting. Try again in a few seconds.",
+      );
+    }
+
+    return {
+      session,
+      socket: managed.socket,
     };
   }
 
