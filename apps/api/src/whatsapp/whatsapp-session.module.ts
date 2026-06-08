@@ -7,6 +7,7 @@ import { MessageForwardingService } from "../modules/routes/message-forwarding.s
 import { PrismaService } from "../prisma.service";
 import { BaileysPrismaAuthStore } from "./auth/baileys-prisma-auth.store";
 import { WhatsAppGroupDiscoveryService } from "./groups/whatsapp-group-discovery.service";
+import { WhatsAppInviteService } from "./invites/whatsapp-invite.service";
 import { WhatsAppMessagesController } from "./messages/whatsapp-messages.controller";
 import { WhatsAppMessagesService } from "./messages/whatsapp-messages.service";
 import { WhatsAppSessionCacheService } from "./session/whatsapp-session-cache.service";
@@ -27,11 +28,16 @@ import {
     PrismaService,
     BaileysPrismaAuthStore,
     WhatsAppGroupDiscoveryService,
+    WhatsAppInviteService,
     MessageForwardingService,
     WhatsAppMessagesService,
     WhatsAppSessionCacheService,
     WhatsAppSessionManager,
   ],
-  exports: [WhatsAppSessionManager, MessageForwardingService],
+  exports: [
+    WhatsAppSessionManager,
+    WhatsAppInviteService,
+    MessageForwardingService,
+  ],
 })
 export class WhatsAppSessionModule {}

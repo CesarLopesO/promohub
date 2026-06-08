@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
+  Clock3,
   Copy,
   FlaskConical,
   Save,
@@ -10,12 +11,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@promohub/ui/button";
-import {
-  EmptyState,
-  ErrorBox,
-  LoadingBlock,
-  PageHeader,
-} from "@/src/components/ui-state";
+import { ErrorBox, LoadingBlock, PageHeader } from "@/src/components/ui-state";
 import { apiFetch } from "@/src/lib/api";
 
 type Credential = {
@@ -115,6 +111,17 @@ type MercadoLivreRawResult = {
   body: unknown;
 };
 
+const UPCOMING_MARKETPLACES = [
+  "Shopee",
+  "AliExpress",
+  "Magazine Luiza",
+  "Casas Bahia",
+  "Ponto",
+  "Extra",
+  "Kabum",
+  "Netshoes",
+] as const;
+
 export default function CredentialsPage() {
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [amazonTrackingId, setAmazonTrackingId] = useState("");
@@ -137,8 +144,9 @@ export default function CredentialsPage() {
       2,
     ),
   );
-  const [mlRawResult, setMlRawResult] =
-    useState<MercadoLivreRawResult | null>(null);
+  const [mlRawResult, setMlRawResult] = useState<MercadoLivreRawResult | null>(
+    null,
+  );
   const [testingMlRaw, setTestingMlRaw] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -160,7 +168,9 @@ export default function CredentialsPage() {
     const result = await apiFetch<Credential[]>("/affiliate/credentials");
     setCredentials(result);
 
-    const amazon = result.find((credential) => credential.marketplace === "amazon");
+    const amazon = result.find(
+      (credential) => credential.marketplace === "amazon",
+    );
     const mercadoLivre = result.find(
       (credential) => credential.marketplace === "mercado_livre",
     );
@@ -192,7 +202,9 @@ export default function CredentialsPage() {
       } catch (err) {
         if (!cancelled) {
           setError(
-            err instanceof Error ? err.message : "Erro ao carregar credenciais.",
+            err instanceof Error
+              ? err.message
+              : "Erro ao carregar credenciais.",
           );
         }
       } finally {
@@ -362,7 +374,7 @@ export default function CredentialsPage() {
     <div>
       <PageHeader
         title="Credenciais de Afiliado"
-        description="Configure suas tags da Amazon e Mercado Livre."
+        description="Gerencie as integrações com seus programas de afiliados."
       />
 
       {error ? (
@@ -375,16 +387,7 @@ export default function CredentialsPage() {
         <LoadingBlock message="Carregando credenciais..." />
       ) : (
         <>
-          <section className="mb-6 grid gap-4 sm:grid-cols-2">
-            <SummaryCard
-              label="Amazon"
-              configured={Boolean(amazonCredential?.isActive)}
-            />
-            <SummaryCard
-              label="Mercado Livre"
-              configured={Boolean(mlCredential?.isActive)}
-            />
-          </section>
+          <MarketplaceOverview />
 
           <section className="grid gap-4 lg:grid-cols-2">
             <form
@@ -396,9 +399,6 @@ export default function CredentialsPage() {
                   <h2 className="text-lg font-semibold text-slate-950">
                     Amazon
                   </h2>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Status: {amazonCredential?.isActive ? "Ativa" : "Nao configurada"}
-                  </p>
                 </div>
               </div>
 
@@ -426,6 +426,22 @@ export default function CredentialsPage() {
                 <Save className="h-4 w-4" aria-hidden="true" />
                 {saving === "amazon" ? "Salvando..." : "Salvar Amazon"}
               </Button>
+
+              <div className="mt-6 border-t border-slate-200 pt-5">
+                <h3 className="text-sm font-semibold text-slate-950">
+                  Configuração atual
+                </h3>
+                <dl className="mt-3 grid gap-2 text-sm">
+                  <Row
+                    label="Status"
+                    value={amazonCredential?.isActive ? "Ativa" : "Inativa"}
+                  />
+                  <Row
+                    label="Tag atual"
+                    value={amazonCredential?.trackingId || "Não informada"}
+                  />
+                </dl>
+              </div>
             </form>
 
             <form
@@ -437,14 +453,6 @@ export default function CredentialsPage() {
                   <h2 className="text-lg font-semibold text-slate-950">
                     Mercado Livre
                   </h2>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Status: {mlCredential?.isActive ? "Ativa" : "Nao configurada"}
-                  </p>
-                  {mlHasToken ? (
-                    <span className="mt-2 inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                      SSID configurado
-                    </span>
-                  ) : null}
                 </div>
               </div>
 
@@ -554,28 +562,57 @@ export default function CredentialsPage() {
                   variant="outline"
                 >
                   <FlaskConical className="h-4 w-4" aria-hidden="true" />
-                  {testingMlRaw
-                    ? "Executando..."
-                    : "Teste RAW Mercado Livre"}
+                  {testingMlRaw ? "Executando..." : "Teste RAW Mercado Livre"}
                 </Button>
 
                 {mlRawResult ? (
                   <MercadoLivreRawDetails result={mlRawResult} />
                 ) : null}
               </div>
+
+              <div className="mt-6 border-t border-slate-200 pt-5">
+                <h3 className="text-sm font-semibold text-slate-950">
+                  Configuração atual
+                </h3>
+                <dl className="mt-3 grid gap-2 text-sm">
+                  <Row
+                    label="Status"
+                    value={mlCredential?.isActive ? "Ativa" : "Inativa"}
+                  />
+                  <Row
+                    label="Affiliate ID atual"
+                    value={mlCredential?.affiliateId || "Não informado"}
+                  />
+                  <Row
+                    label="SSID"
+                    value={
+                      mlCredential?.hasSessionToken
+                        ? "Configurado"
+                        : "Não configurado"
+                    }
+                  />
+                </dl>
+              </div>
             </form>
           </section>
 
           <section className="mt-6">
-            {credentials.length === 0 ? (
-              <EmptyState message="Nenhuma credencial cadastrada." />
-            ) : (
-              <div className="grid gap-4 lg:grid-cols-2">
-                {credentials.map((credential) => (
-                  <CredentialSummary credential={credential} key={credential.id} />
-                ))}
-              </div>
-            )}
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-slate-950">
+                Próximas integrações
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Novos marketplaces serão liberados gradualmente.
+              </p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {UPCOMING_MARKETPLACES.map((marketplace) => (
+                <UpcomingMarketplaceCard
+                  key={marketplace}
+                  marketplace={marketplace}
+                />
+              ))}
+            </div>
           </section>
         </>
       )}
@@ -583,11 +620,73 @@ export default function CredentialsPage() {
   );
 }
 
-function MercadoLivreRawDetails({
-  result,
-}: {
-  result: MercadoLivreRawResult;
-}) {
+function MarketplaceOverview() {
+  return (
+    <section className="mb-6 rounded-lg border border-slate-200 bg-white p-5">
+      <h2 className="text-base font-semibold text-slate-950">
+        Marketplaces disponíveis
+      </h2>
+      <div className="mt-4 grid gap-5 md:grid-cols-2">
+        <div>
+          <p className="text-xs font-semibold uppercase text-emerald-700">
+            Suportados
+          </p>
+          <ul className="mt-2 space-y-2 text-sm text-slate-700">
+            {["Amazon", "Mercado Livre"].map((marketplace) => (
+              <li className="flex items-center gap-2" key={marketplace}>
+                <CheckCircle2
+                  aria-hidden="true"
+                  className="h-4 w-4 text-emerald-600"
+                />
+                {marketplace}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase text-amber-700">
+            Em desenvolvimento
+          </p>
+          <ul className="mt-2 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+            {UPCOMING_MARKETPLACES.map((marketplace) => (
+              <li className="flex items-center gap-2" key={marketplace}>
+                <Clock3 aria-hidden="true" className="h-4 w-4 text-amber-600" />
+                {marketplace}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function UpcomingMarketplaceCard({ marketplace }: { marketplace: string }) {
+  return (
+    <article className="rounded-lg border border-slate-200 bg-slate-50 p-5">
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="text-base font-semibold text-slate-700">
+          {marketplace}
+        </h3>
+        <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+          Em breve
+        </span>
+      </div>
+      <label className="mt-5 block text-sm font-medium text-slate-500">
+        Credencial de afiliado
+        <input
+          className="mt-1 h-10 w-full cursor-not-allowed rounded-md border border-slate-200 bg-slate-100 px-3 text-sm text-slate-400"
+          disabled
+          placeholder="Em breve"
+          readOnly
+          type="text"
+        />
+      </label>
+    </article>
+  );
+}
+
+function MercadoLivreRawDetails({ result }: { result: MercadoLivreRawResult }) {
   return (
     <div className="mt-4 border border-slate-200 bg-slate-50 p-4 text-sm">
       <p className="font-semibold text-slate-950">
@@ -620,8 +719,7 @@ function MercadoLivreTestDetails({
 }: {
   result: MercadoLivreTestResult;
 }) {
-  const isPending =
-    result.reason === "MERCADO_LIVRE_GENERATOR_URL_MISSING";
+  const isPending = result.reason === "MERCADO_LIVRE_GENERATOR_URL_MISSING";
   const statusLabel = result.changed
     ? result.mode === "legacy"
       ? "Link legado gerado"
@@ -631,7 +729,7 @@ function MercadoLivreTestDetails({
       : "Falha na geração";
   const message = isPending
     ? "Sua etiqueta e SSID estão salvos, mas ainda falta configurar o endpoint real do gerador Mercado Livre no backend."
-    : result.message ?? result.error;
+    : (result.message ?? result.error);
 
   async function copyAffiliateUrl() {
     if (result.affiliateUrl) {
@@ -649,7 +747,10 @@ function MercadoLivreTestDetails({
     >
       <div className="flex items-center gap-2 font-semibold text-slate-950">
         {result.changed ? (
-          <CheckCircle2 className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+          <CheckCircle2
+            className="h-4 w-4 text-emerald-700"
+            aria-hidden="true"
+          />
         ) : (
           <XCircle className="h-4 w-4 text-rose-700" aria-hidden="true" />
         )}
@@ -662,27 +763,15 @@ function MercadoLivreTestDetails({
           label="URL enviada ao endpoint"
           value={result.attemptedPayloadUrl || "-"}
         />
-        <Row
-          label="Produto de origem"
-          value={result.originProductUrl || "-"}
-        />
+        <Row label="Produto de origem" value={result.originProductUrl || "-"} />
         <Row
           label="Confiança da origem"
           value={result.originConfidence || "none"}
         />
         {result.itemId ? <Row label="Item ID" value={result.itemId} /> : null}
-        <Row
-          label="Item original"
-          value={result.originalItemId || "-"}
-        />
-        <Row
-          label="Item gerado"
-          value={result.generatedItemId || "-"}
-        />
-        <Row
-          label="Mesmo produto"
-          value={result.sameProduct ? "Sim" : "Não"}
-        />
+        <Row label="Item original" value={result.originalItemId || "-"} />
+        <Row label="Item gerado" value={result.generatedItemId || "-"} />
+        <Row label="Mesmo produto" value={result.sameProduct ? "Sim" : "Não"} />
         <Row
           label="Pode encaminhar"
           value={result.canForward ? "Sim" : "Não"}
@@ -787,56 +876,6 @@ function MercadoLivreTestDetails({
         </Button>
       ) : null}
     </div>
-  );
-}
-
-function SummaryCard({
-  label,
-  configured,
-}: {
-  label: string;
-  configured: boolean;
-}) {
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5">
-      <p className="text-sm text-slate-500">{label}</p>
-      <p
-        className={`mt-2 text-lg font-semibold ${
-          configured ? "text-emerald-700" : "text-amber-700"
-        }`}
-      >
-        {configured ? "Configurado" : "Pendente"}
-      </p>
-    </div>
-  );
-}
-
-function CredentialSummary({ credential }: { credential: Credential }) {
-  const isMercadoLivre = credential.marketplace === "mercado_livre";
-
-  return (
-    <article className="rounded-lg border border-slate-200 bg-white p-5">
-      <h2 className="text-base font-semibold text-slate-950">
-        {isMercadoLivre ? "Mercado Livre" : "Amazon"}
-      </h2>
-      <dl className="mt-4 grid gap-2 text-sm">
-        {isMercadoLivre ? (
-          <>
-            <Row
-              label="SSID"
-              value={credential.hasSessionToken ? "Configurado" : "Nao configurado"}
-            />
-            <Row
-              label="Affiliate ID"
-              value={credential.affiliateId || "Nao informado"}
-            />
-          </>
-        ) : (
-          <Row label="Tag" value={credential.trackingId} />
-        )}
-        <Row label="Status" value={credential.isActive ? "Ativa" : "Inativa"} />
-      </dl>
-    </article>
   );
 }
 

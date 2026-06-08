@@ -2,6 +2,7 @@ export enum Marketplace {
   AMAZON = "amazon",
   MERCADO_LIVRE = "mercado_livre",
   SHOPEE = "shopee",
+  WHATSAPP = "whatsapp",
   UNKNOWN = "unknown",
 }
 

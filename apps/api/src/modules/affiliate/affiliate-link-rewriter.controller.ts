@@ -16,6 +16,7 @@ import {
 import { TestMercadoLivreLinkDto } from "./dto/test-mercadolivre-link.dto";
 import { TestMercadoLivreRawDto } from "./dto/test-mercadolivre-raw.dto";
 import { DebugMercadoLivreSocialDto } from "./dto/debug-mercadolivre-social.dto";
+import { TestAmazonLinkDto } from "./dto/test-amazon-link.dto";
 
 @UseGuards(JwtAuthGuard)
 @Controller("affiliate")
@@ -116,6 +117,27 @@ export class AffiliateLinkRewriterController {
       ].includes(result.reason ?? "")
         ? { error: result.error }
         : {}),
+    };
+  }
+
+  @Post("test/amazon")
+  async testAmazon(
+    @Body() body: TestAmazonLinkDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const result = await this.rewriterService.testAmazonForUser(
+      req.user.id,
+      body.url,
+    );
+
+    return {
+      marketplace: Marketplace.AMAZON,
+      originalUrl: result.originalUrl,
+      resolvedUrl: result.resolvedUrl ?? result.originalUrl,
+      affiliateUrl: result.rewrittenUrl,
+      tag: result.tag ?? null,
+      changed: result.changed,
+      reason: result.reason ?? null,
     };
   }
 

@@ -9,7 +9,12 @@ import { AffiliateLinkRewriterService } from "../affiliate/affiliate-link-rewrit
 import { Marketplace } from "../affiliate/helpers/detect-marketplace";
 import { PrismaService } from "../../prisma.service";
 import { WhatsAppSessionManager } from "../../whatsapp/session/whatsapp-session.manager";
+import { WhatsAppInviteService } from "../../whatsapp/invites/whatsapp-invite.service";
 import { downloadImageFromRawMessage } from "./helpers/download-image-from-raw-message";
+import {
+  detectWhatsAppInviteLinks,
+  replaceWhatsAppLinks,
+} from "./helpers/whatsapp-link-rewriter";
 
 const FORWARDED_STATUS_SENT = "SENT";
 const FORWARDED_STATUS_SENT_TEXT_FALLBACK = "SENT_TEXT_FALLBACK";
@@ -26,6 +31,7 @@ export type ForwardMessageResultDto = {
   mediaForwarded?: boolean;
   sentProviderMessageId?: string;
   error?: string;
+  warnings?: string[];
 };
 
 export type ForwardMessageResponseDto = {
@@ -42,6 +48,7 @@ export class MessageForwardingService {
     private readonly prisma: PrismaService,
     private readonly linkRewriter: AffiliateLinkRewriterService,
     private readonly sessionManager: WhatsAppSessionManager,
+    private readonly inviteService: WhatsAppInviteService,
   ) {}
 
   async forwardMessageById(
@@ -68,8 +75,9 @@ export class MessageForwardingService {
     }
 
     const links = this.readLinks(message.links);
+    const whatsappLinks = detectWhatsAppInviteLinks(message.text ?? "");
 
-    if (mode === "auto" && links.length === 0) {
+    if (mode === "auto" && links.length === 0 && whatsappLinks.length === 0) {
       console.log("[AUTO_FORWARD] skipped no links");
       return this.toForwardResponse(message.id, []);
     }
@@ -110,10 +118,7 @@ export class MessageForwardingService {
         ),
     );
 
-    if (
-      mercadoLivreRewrites.length > 0 &&
-      !allMercadoLivreRewritesSucceeded
-    ) {
+    if (mercadoLivreRewrites.length > 0 && !allMercadoLivreRewritesSucceeded) {
       const reason =
         rewritePreview.reason ??
         mercadoLivreRewrites.find((rewrite) => !rewrite.changed)?.reason ??
@@ -134,9 +139,37 @@ export class MessageForwardingService {
       });
     }
 
+    const failedAmazonRewrite = rewritePreview.rewrites.find(
+      (rewrite) =>
+        rewrite.marketplace === Marketplace.AMAZON &&
+        rewrite.canForward !== true &&
+        this.isAmazonFailureReason(rewrite.reason),
+    );
+
+    if (failedAmazonRewrite) {
+      const reason = failedAmazonRewrite.reason ?? "AMAZON_TAG_NOT_CONFIGURED";
+      console.log(`[MESSAGE_FORWARD] skipped reason=${reason}`);
+
+      return this.persistSkippedForRoutes({
+        userId: normalizedUserId,
+        message,
+        routes,
+        mode,
+        rewrittenText:
+          rewritePreview.rewrittenText ??
+          rewritePreview.originalText ??
+          message.text ??
+          "",
+        reason,
+      });
+    }
+
     if (
       mode === "auto" &&
-      !rewritePreview.rewrites.some((rewrite) => rewrite.changed)
+      !rewritePreview.rewrites.some(
+        (rewrite) => rewrite.changed || rewrite.canForward === true,
+      ) &&
+      whatsappLinks.length === 0
     ) {
       const reasons = [
         ...new Set(
@@ -151,7 +184,7 @@ export class MessageForwardingService {
       return this.toForwardResponse(message.id, []);
     }
 
-    const rewrittenText =
+    const affiliateRewrittenText =
       rewritePreview.rewrittenText ?? rewritePreview.originalText ?? "";
     const session = await this.prisma.whatsAppSession.findFirst({
       where: {
@@ -173,6 +206,29 @@ export class MessageForwardingService {
 
     for (const route of routes) {
       const destinationGroupJid = route.destinationGroupJid;
+      const destinationInviteUrl =
+        whatsappLinks.length > 0
+          ? await this.inviteService.getDestinationInviteUrl(
+              route.sessionId,
+              destinationGroupJid,
+              route.destinationInviteUrl,
+            )
+          : null;
+      const whatsappRewrite = replaceWhatsAppLinks(
+        affiliateRewrittenText,
+        destinationInviteUrl,
+      );
+      const rewrittenText = whatsappRewrite.text;
+      const warnings =
+        whatsappLinks.length > 0 && !destinationInviteUrl
+          ? ["WHATSAPP_INVITE_CODE_FAILED"]
+          : [];
+
+      if (whatsappRewrite.changed) {
+        console.log(
+          `[WHATSAPP_LINK_REWRITE] replaced count=${whatsappRewrite.links.length}`,
+        );
+      }
       const alreadySent = await this.prisma.forwardedMessage.findFirst({
         where: {
           sourceMessageId: message.id,
@@ -227,6 +283,7 @@ export class MessageForwardingService {
           sentMessageType: sendResult.sentMessageType,
           mediaForwarded: sendResult.mediaForwarded,
           sentProviderMessageId: sendResult.sentProviderMessageId,
+          ...(warnings.length > 0 ? { warnings } : {}),
         });
       } catch (error) {
         const errorMessage = this.readErrorMessage(error);
@@ -261,6 +318,7 @@ export class MessageForwardingService {
           sentMessageType: "text",
           mediaForwarded: false,
           error: errorMessage,
+          ...(warnings.length > 0 ? { warnings } : {}),
         });
       }
     }
@@ -340,7 +398,9 @@ export class MessageForwardingService {
   }
 
   private async sendForwardedMessage(
-    socket: Awaited<ReturnType<WhatsAppSessionManager["getConnectedSocket"]>>["socket"],
+    socket: Awaited<
+      ReturnType<WhatsAppSessionManager["getConnectedSocket"]>
+    >["socket"],
     destinationGroupJid: string,
     message: {
       messageType: string;
@@ -360,15 +420,11 @@ export class MessageForwardingService {
         text: rewrittenText,
       });
 
-      return this.toSuccessfulSendResult(
-        destinationGroupJid,
-        providerResult,
-        {
-          status: FORWARDED_STATUS_SENT,
-          sentMessageType: "text",
-          mediaForwarded: false,
-        },
-      );
+      return this.toSuccessfulSendResult(destinationGroupJid, providerResult, {
+        status: FORWARDED_STATUS_SENT,
+        sentMessageType: "text",
+        mediaForwarded: false,
+      });
     }
 
     let image: Buffer;
@@ -382,15 +438,11 @@ export class MessageForwardingService {
         text: rewrittenText,
       });
 
-      return this.toSuccessfulSendResult(
-        destinationGroupJid,
-        providerResult,
-        {
-          status: FORWARDED_STATUS_SENT_TEXT_FALLBACK,
-          sentMessageType: "text_fallback",
-          mediaForwarded: false,
-        },
-      );
+      return this.toSuccessfulSendResult(destinationGroupJid, providerResult, {
+        status: FORWARDED_STATUS_SENT_TEXT_FALLBACK,
+        sentMessageType: "text_fallback",
+        mediaForwarded: false,
+      });
     }
 
     const providerResult = await socket.sendMessage(destinationGroupJid, {
@@ -399,15 +451,11 @@ export class MessageForwardingService {
     });
     console.log("[FORWARD_MEDIA] image sent");
 
-    return this.toSuccessfulSendResult(
-      destinationGroupJid,
-      providerResult,
-      {
-        status: FORWARDED_STATUS_SENT,
-        sentMessageType: "image",
-        mediaForwarded: true,
-      },
-    );
+    return this.toSuccessfulSendResult(destinationGroupJid, providerResult, {
+      status: FORWARDED_STATUS_SENT,
+      sentMessageType: "image",
+      mediaForwarded: true,
+    });
   }
 
   private toSuccessfulSendResult(
@@ -538,7 +586,9 @@ export class MessageForwardingService {
 
   private downloadImage(
     rawMessage: Prisma.JsonValue | null,
-    socket: Awaited<ReturnType<WhatsAppSessionManager["getConnectedSocket"]>>["socket"],
+    socket: Awaited<
+      ReturnType<WhatsAppSessionManager["getConnectedSocket"]>
+    >["socket"],
   ): Promise<Buffer> {
     return downloadImageFromRawMessage(rawMessage, socket);
   }
@@ -559,6 +609,12 @@ export class MessageForwardingService {
     }
 
     return "Unknown error";
+  }
+
+  private isAmazonFailureReason(reason?: string): boolean {
+    return (
+      reason === "INVALID_AMAZON_URL" || Boolean(reason?.startsWith("AMAZON_"))
+    );
   }
 
   private normalizeRequiredString(value: string, fieldName: string): string {

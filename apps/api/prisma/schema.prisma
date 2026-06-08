@@ -195,6 +195,7 @@ model MessageRoute {
   sessionId           String
   sourceGroupJid      String
   destinationGroupJid String
+  destinationInviteUrl String?
   isActive            Boolean  @default(true)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt

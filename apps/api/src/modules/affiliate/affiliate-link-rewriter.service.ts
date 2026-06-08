@@ -14,6 +14,7 @@ import { detectMarketplace, Marketplace } from "./helpers/detect-marketplace";
 import { replaceLinksInText } from "./helpers/replace-links-in-text";
 import { getAffiliateProvider } from "./providers/affiliate-provider.factory";
 import { MercadoLivreAffiliateProvider } from "./providers/mercadolivre.provider";
+import { AmazonAffiliateProvider } from "./providers/amazon.provider";
 import type {
   MercadoLivreGenerationAttempt,
   MercadoLivreSocialCandidate,
@@ -25,6 +26,7 @@ export type AffiliateRewriteResult = {
   rewrittenUrl: string;
   marketplace: Marketplace;
   changed: boolean;
+  tag?: string;
   mode?: "real" | "legacy" | "disabled";
   reason?: string;
   error?: string;
@@ -100,6 +102,7 @@ export class AffiliateLinkRewriterService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly mercadoLivreProvider: MercadoLivreAffiliateProvider,
+    private readonly amazonProvider: AmazonAffiliateProvider,
   ) {}
 
   async rewriteUrlForUser(
@@ -125,13 +128,21 @@ export class AffiliateLinkRewriterService {
     });
 
     if (!credential?.isActive) {
-      return this.unchanged(normalizedUrl, marketplace, "MISSING_CREDENTIAL");
+      return this.unchanged(
+        normalizedUrl,
+        marketplace,
+        marketplace === Marketplace.AMAZON
+          ? "AMAZON_TAG_NOT_CONFIGURED"
+          : "MISSING_CREDENTIAL",
+        marketplace === Marketplace.AMAZON ? { canForward: false } : undefined,
+      );
     }
     const decryptedCredential = decryptAffiliateCredential(credential);
 
     const provider = getAffiliateProvider(
       marketplace,
       this.mercadoLivreProvider,
+      this.amazonProvider,
     );
 
     if (!provider) {
@@ -194,7 +205,7 @@ export class AffiliateLinkRewriterService {
       context,
     );
 
-    if (!providerResult.changed) {
+    if (!providerResult.changed && providerResult.canForward !== true) {
       return this.unchanged(
         normalizedUrl,
         marketplace,
@@ -207,7 +218,8 @@ export class AffiliateLinkRewriterService {
       originalUrl: normalizedUrl,
       rewrittenUrl: providerResult.rewrittenUrl,
       marketplace,
-      changed: true,
+      changed: providerResult.changed,
+      ...(providerResult.tag ? { tag: providerResult.tag } : {}),
       ...(providerResult.reason ? { reason: providerResult.reason } : {}),
       ...(providerResult.mode ? { mode: providerResult.mode } : {}),
       ...(providerResult.warning ? { warning: providerResult.warning } : {}),
@@ -372,6 +384,24 @@ export class AffiliateLinkRewriterService {
     return result;
   }
 
+  async testAmazonForUser(
+    userId: string,
+    originalUrl: string,
+  ): Promise<AffiliateRewriteResult> {
+    const result = await this.rewriteUrlForUser(userId, originalUrl);
+
+    if (result.marketplace !== Marketplace.AMAZON) {
+      return this.unchanged(
+        result.originalUrl,
+        Marketplace.AMAZON,
+        "INVALID_AMAZON_URL",
+        { canForward: false },
+      );
+    }
+
+    return result;
+  }
+
   async testMercadoLivreRawForUser(
     userId: string,
     originalUrl: string,
@@ -526,6 +556,11 @@ export class AffiliateLinkRewriterService {
     const failedMercadoLivreRewrites = mercadoLivreRewrites.filter(
       (rewrite) => !successfulMercadoLivreRewrites.includes(rewrite),
     );
+    const failedAmazonRewrites = rewrites.filter(
+      (rewrite) =>
+        rewrite.marketplace === Marketplace.AMAZON &&
+        rewrite.canForward !== true,
+    );
     const mercadoLivreFailureReason =
       failedMercadoLivreRewrites.find(
         (rewrite) => rewrite.reason === "MERCADO_LIVRE_PRODUCT_NOT_FOUND",
@@ -539,9 +574,12 @@ export class AffiliateLinkRewriterService {
     }
 
     const canForward =
-      mercadoLivreRewrites.length > 0
+      failedAmazonRewrites.length === 0 &&
+      (mercadoLivreRewrites.length > 0
         ? failedMercadoLivreRewrites.length === 0
-        : rewrites.some((rewrite) => rewrite.changed);
+        : rewrites.some(
+            (rewrite) => rewrite.changed || rewrite.canForward === true,
+          ));
 
     return {
       messageId: message.id,
@@ -550,9 +588,11 @@ export class AffiliateLinkRewriterService {
       originalText: message.text,
       rewrittenText,
       rewrites,
-      ...(failedMercadoLivreRewrites.length > 0
-        ? { reason: mercadoLivreFailureReason }
-        : {}),
+      ...(failedAmazonRewrites.length > 0
+        ? { reason: failedAmazonRewrites[0]?.reason }
+        : failedMercadoLivreRewrites.length > 0
+          ? { reason: mercadoLivreFailureReason }
+          : {}),
     };
   }
 
@@ -564,6 +604,7 @@ export class AffiliateLinkRewriterService {
       error?: string;
       mode?: "real" | "legacy" | "disabled";
       warning?: string;
+      tag?: string;
       resolvedUrl?: string;
       attemptedPayloadUrl?: string;
       itemId?: string;
@@ -607,6 +648,7 @@ export class AffiliateLinkRewriterService {
       reason,
       ...(details?.mode ? { mode: details.mode } : {}),
       ...(details?.warning ? { warning: details.warning } : {}),
+      ...(details?.tag ? { tag: details.tag } : {}),
       ...(details?.error ? { error: details.error } : {}),
       ...(details?.resolvedUrl ? { resolvedUrl: details.resolvedUrl } : {}),
       ...(details?.attemptedPayloadUrl

@@ -42,6 +42,7 @@ type MessageRoute = {
   sessionId: string;
   sourceGroupJid: string;
   destinationGroupJid: string;
+  destinationInviteUrl?: string;
   isActive: boolean;
   createdAt: string;
 };
@@ -50,6 +51,7 @@ type RouteForm = {
   sessionRecordId: string;
   sourceGroupJid: string;
   destinationGroupJid: string;
+  destinationInviteUrl: string;
 };
 
 type PlanUsage = {
@@ -75,6 +77,7 @@ export default function GroupsPage() {
     sessionRecordId: "",
     sourceGroupJid: "",
     destinationGroupJid: "",
+    destinationInviteUrl: "",
   });
   const [loading, setLoading] = useState(true);
   const [actionId, setActionId] = useState<string | null>(null);
@@ -87,13 +90,9 @@ export default function GroupsPage() {
     (session) => session.id === form.sessionRecordId,
   );
   const selectedGroups = selectedSession
-    ? groupsBySession[selectedSession.id] ?? []
+    ? (groupsBySession[selectedSession.id] ?? [])
     : [];
-  const routeLimitMessage = readRouteLimitMessage(
-    form,
-    routes,
-    planUsage,
-  );
+  const routeLimitMessage = readRouteLimitMessage(form, routes, planUsage);
 
   useEffect(() => {
     let cancelled = false;
@@ -124,7 +123,9 @@ export default function GroupsPage() {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Erro ao carregar grupos.");
+          setError(
+            err instanceof Error ? err.message : "Erro ao carregar grupos.",
+          );
         }
       } finally {
         if (!cancelled) {
@@ -166,7 +167,9 @@ export default function GroupsPage() {
         [sessionRecordId]: result.groups,
       }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao sincronizar grupos.");
+      setError(
+        err instanceof Error ? err.message : "Erro ao sincronizar grupos.",
+      );
     } finally {
       setActionId(null);
     }
@@ -221,6 +224,7 @@ export default function GroupsPage() {
           sessionId: selectedSession.sessionId,
           sourceGroupJid: form.sourceGroupJid,
           destinationGroupJid: form.destinationGroupJid,
+          destinationInviteUrl: form.destinationInviteUrl.trim() || undefined,
         }),
       });
       const [routeResult, usageResult] = await Promise.all([
@@ -233,6 +237,7 @@ export default function GroupsPage() {
         ...current,
         sourceGroupJid: "",
         destinationGroupJid: "",
+        destinationInviteUrl: "",
       }));
     } catch (err) {
       if (err instanceof ApiError && err.status === 400) {
@@ -263,6 +268,7 @@ export default function GroupsPage() {
       sessionRecordId,
       sourceGroupJid: "",
       destinationGroupJid: "",
+      destinationInviteUrl: "",
     });
 
     if (sessionRecordId && !groupsBySession[sessionRecordId]) {
@@ -406,6 +412,26 @@ export default function GroupsPage() {
               }
               value={form.destinationGroupJid}
             />
+            <label className="block text-sm font-medium text-slate-700 lg:col-span-3">
+              Link do seu grupo/canal destino
+              <input
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
+                onChange={(event) =>
+                  setForm((current) => ({
+                    ...current,
+                    destinationInviteUrl: event.target.value,
+                  }))
+                }
+                placeholder="https://chat.whatsapp.com/SEU_LINK"
+                type="url"
+                value={form.destinationInviteUrl}
+              />
+              <span className="mt-1 block text-xs font-normal text-slate-500">
+                Opcional. Se vazio, o Promohub tenta gerar automaticamente o
+                link de convite do grupo destino. O WhatsApp conectado precisa
+                ser admin do grupo.
+              </span>
+            </label>
             <div className="flex items-end">
               <Button
                 className="w-full"
@@ -426,7 +452,10 @@ export default function GroupsPage() {
             <h2 className="text-base font-semibold text-slate-950">
               Grupos sincronizados
             </h2>
-            <GroupsTable groupsBySession={groupsBySession} sessions={sessions} />
+            <GroupsTable
+              groupsBySession={groupsBySession}
+              sessions={sessions}
+            />
           </section>
         </div>
       )}

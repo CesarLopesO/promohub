@@ -4,16 +4,13 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import type {
-  ForwardedMessage,
-  MessageRoute,
-  Prisma,
-} from "@prisma/client";
+import type { ForwardedMessage, MessageRoute, Prisma } from "@prisma/client";
 
 import {
   AffiliateLinkRewriterService,
   AffiliateRewriteResult,
 } from "../affiliate/affiliate-link-rewriter.service";
+import { Marketplace } from "../affiliate/helpers/detect-marketplace";
 import { PlanLimitsService } from "../plans/plan-limits.service";
 import { PrismaService } from "../../prisma.service";
 import type { CreateMessageRouteDto } from "./dto/create-message-route.dto";
@@ -24,6 +21,11 @@ import {
   ForwardMessageResponseDto,
   MessageForwardingService,
 } from "./message-forwarding.service";
+import {
+  detectWhatsAppInviteLinks,
+  replaceWhatsAppLinks,
+} from "./helpers/whatsapp-link-rewriter";
+import { WhatsAppInviteService } from "../../whatsapp/invites/whatsapp-invite.service";
 
 export type MessageRouteDto = {
   id: string;
@@ -31,6 +33,7 @@ export type MessageRouteDto = {
   sessionId: string;
   sourceGroupJid: string;
   destinationGroupJid: string;
+  destinationInviteUrl?: string;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -43,6 +46,14 @@ export type MessageRoutePreviewDto = {
   rewrittenText: string;
   canForward: boolean;
   rewrites: AffiliateRewriteResult[];
+  warnings: string[];
+  destinationPreviews: Array<{
+    destinationGroupJid: string;
+    destinationInviteUrl?: string;
+    rewrittenText: string;
+    whatsappLinksReplacedCount: number;
+    warnings: string[];
+  }>;
 };
 
 export type ForwardedMessageDto = {
@@ -73,6 +84,7 @@ export class MessageRoutesService {
     private readonly linkRewriter: AffiliateLinkRewriterService,
     private readonly forwardingService: MessageForwardingService,
     private readonly planLimits: PlanLimitsService,
+    private readonly inviteService: WhatsAppInviteService,
   ) {}
 
   async create(
@@ -88,6 +100,9 @@ export class MessageRoutesService {
       destinationGroupJid: this.normalizeRequiredString(
         body.destinationGroupJid,
         "destinationGroupJid",
+      ),
+      destinationInviteUrl: this.normalizeOptionalString(
+        body.destinationInviteUrl,
       ),
     };
 
@@ -126,6 +141,7 @@ export class MessageRoutesService {
         },
         data: {
           isActive: true,
+          destinationInviteUrl: data.destinationInviteUrl,
         },
       });
 
@@ -203,6 +219,10 @@ export class MessageRoutesService {
               "destinationGroupJid",
             ),
       isActive: body.isActive === undefined ? route.isActive : body.isActive,
+      destinationInviteUrl:
+        body.destinationInviteUrl === undefined
+          ? route.destinationInviteUrl
+          : this.normalizeOptionalString(body.destinationInviteUrl),
     };
 
     if (data.sourceGroupJid === data.destinationGroupJid) {
@@ -244,6 +264,7 @@ export class MessageRoutesService {
           sessionId: data.sessionId,
           sourceGroupJid: data.sourceGroupJid,
           destinationGroupJid: data.destinationGroupJid,
+          destinationInviteUrl: data.destinationInviteUrl,
           isActive: data.isActive,
         },
       });
@@ -303,16 +324,76 @@ export class MessageRoutesService {
       },
     });
     const destinationGroups = routes.map((route) => route.destinationGroupJid);
+    const affiliateRewrittenText =
+      rewritePreview.rewrittenText ?? rewritePreview.originalText ?? "";
+    const detectedWhatsAppLinks = detectWhatsAppInviteLinks(
+      affiliateRewrittenText,
+    );
+    const destinationPreviews = await Promise.all(
+      routes.map(async (route) => {
+        const destinationInviteUrl =
+          detectedWhatsAppLinks.length > 0
+            ? await this.inviteService.getDestinationInviteUrl(
+                route.sessionId,
+                route.destinationGroupJid,
+                route.destinationInviteUrl,
+              )
+            : null;
+        const whatsappRewrite = replaceWhatsAppLinks(
+          affiliateRewrittenText,
+          destinationInviteUrl,
+        );
+        const warnings =
+          detectedWhatsAppLinks.length > 0 && !destinationInviteUrl
+            ? ["WHATSAPP_INVITE_CODE_FAILED"]
+            : [];
+
+        return {
+          destinationGroupJid: route.destinationGroupJid,
+          ...(destinationInviteUrl ? { destinationInviteUrl } : {}),
+          rewrittenText: whatsappRewrite.text,
+          whatsappLinksReplacedCount: whatsappRewrite.changed
+            ? whatsappRewrite.links.length
+            : 0,
+          warnings,
+        };
+      }),
+    );
+    const firstDestinationPreview = destinationPreviews[0];
+    const whatsappRewrites = detectedWhatsAppLinks.map((originalUrl) => ({
+      originalUrl,
+      rewrittenUrl:
+        firstDestinationPreview?.destinationInviteUrl ?? originalUrl,
+      marketplace: Marketplace.WHATSAPP,
+      changed: (firstDestinationPreview?.whatsappLinksReplacedCount ?? 0) > 0,
+      canForward: true,
+      ...((firstDestinationPreview?.warnings.length ?? 0) > 0
+        ? { warning: firstDestinationPreview!.warnings[0] }
+        : {}),
+    }));
+    const hasFailedBlockingAffiliate = rewritePreview.rewrites.some(
+      (rewrite) =>
+        (rewrite.marketplace === Marketplace.MERCADO_LIVRE &&
+          rewrite.canForward !== true) ||
+        (rewrite.marketplace === Marketplace.AMAZON &&
+          rewrite.canForward !== true &&
+          (rewrite.reason === "INVALID_AMAZON_URL" ||
+            Boolean(rewrite.reason?.startsWith("AMAZON_")))),
+    );
 
     return {
       messageId: message.id,
       sourceGroupJid: message.groupJid,
       destinationGroups,
       rewrittenText:
-        rewritePreview.rewrittenText ?? rewritePreview.originalText ?? "",
+        firstDestinationPreview?.rewrittenText ?? affiliateRewrittenText,
       canForward:
-        destinationGroups.length > 0 && rewritePreview.canForward,
-      rewrites: rewritePreview.rewrites,
+        destinationGroups.length > 0 &&
+        !hasFailedBlockingAffiliate &&
+        (rewritePreview.canForward || detectedWhatsAppLinks.length > 0),
+      rewrites: [...rewritePreview.rewrites, ...whatsappRewrites],
+      warnings: firstDestinationPreview?.warnings ?? [],
+      destinationPreviews,
     };
   }
 
@@ -380,6 +461,7 @@ export class MessageRoutesService {
       sessionId: route.sessionId,
       sourceGroupJid: route.sourceGroupJid,
       destinationGroupJid: route.destinationGroupJid,
+      destinationInviteUrl: route.destinationInviteUrl ?? undefined,
       isActive: route.isActive,
       createdAt: route.createdAt,
       updatedAt: route.updatedAt,
@@ -415,6 +497,11 @@ export class MessageRoutesService {
     }
 
     return value.trim();
+  }
+
+  private normalizeOptionalString(value?: string | null): string | undefined {
+    const normalized = value?.trim();
+    return normalized || undefined;
   }
 
   private isPrismaUniqueConstraint(error: unknown): boolean {

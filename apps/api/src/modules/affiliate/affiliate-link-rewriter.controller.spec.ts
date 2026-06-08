@@ -5,6 +5,44 @@ import { AffiliateLinkRewriterController } from "./affiliate-link-rewriter.contr
 import { Marketplace } from "./helpers/detect-marketplace";
 
 describe("AffiliateLinkRewriterController", () => {
+  it("returns Amazon test diagnostics", async () => {
+    const controller = new AffiliateLinkRewriterController({
+      testAmazonForUser: async () => ({
+        originalUrl:
+          "https://www.amazon.com.br/dp/6555165766?&ref_=as_li_ss_tl",
+        rewrittenUrl:
+          "https://www.amazon.com.br/dp/6555165766?ref_=as_li_ss_tl&tag=descontai770f-20",
+        marketplace: Marketplace.AMAZON,
+        resolvedUrl:
+          "https://www.amazon.com.br/dp/6555165766?&ref_=as_li_ss_tl",
+        tag: "descontai770f-20",
+        changed: true,
+        canForward: true,
+      }),
+    } as never);
+
+    assert.deepEqual(
+      await controller.testAmazon(
+        {
+          url: "https://www.amazon.com.br/dp/6555165766?&ref_=as_li_ss_tl",
+        },
+        { user: { id: "test-user" } } as never,
+      ),
+      {
+        marketplace: Marketplace.AMAZON,
+        originalUrl:
+          "https://www.amazon.com.br/dp/6555165766?&ref_=as_li_ss_tl",
+        resolvedUrl:
+          "https://www.amazon.com.br/dp/6555165766?&ref_=as_li_ss_tl",
+        affiliateUrl:
+          "https://www.amazon.com.br/dp/6555165766?ref_=as_li_ss_tl&tag=descontai770f-20",
+        tag: "descontai770f-20",
+        changed: true,
+        reason: null,
+      },
+    );
+  });
+
   it("returns Mercado Livre social diagnostics", async () => {
     const controller = new AffiliateLinkRewriterController({
       debugMercadoLivreSocialForUser: async () => ({

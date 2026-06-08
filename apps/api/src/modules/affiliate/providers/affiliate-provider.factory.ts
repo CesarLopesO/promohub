@@ -7,15 +7,17 @@ import { ShopeeAffiliateProvider } from "./shopee.provider";
 export function getAffiliateProvider(
   marketplace: Marketplace,
   mercadoLivreProvider: MercadoLivreAffiliateProvider,
+  amazonProvider: AmazonAffiliateProvider,
 ): AffiliateProvider | null {
   switch (marketplace) {
     case Marketplace.AMAZON:
-      return new AmazonAffiliateProvider();
+      return amazonProvider;
     case Marketplace.MERCADO_LIVRE:
       return mercadoLivreProvider;
     case Marketplace.SHOPEE:
       return new ShopeeAffiliateProvider();
     case Marketplace.UNKNOWN:
+    case Marketplace.WHATSAPP:
       return null;
   }
 }

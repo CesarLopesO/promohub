@@ -6,6 +6,7 @@ import axios from "axios";
 
 import { AffiliateLinkRewriterService } from "./affiliate-link-rewriter.service";
 import { Marketplace } from "./helpers/detect-marketplace";
+import { AmazonAffiliateProvider } from "./providers/amazon.provider";
 
 const originalFetch = globalThis.fetch;
 const originalAxiosPost = axios.post;
@@ -44,8 +45,8 @@ type StoredMessage = {
 function makeMessage(overrides: Partial<StoredMessage>): StoredMessage {
   return {
     id: "message-id",
-    text: "Loja oficial Amazon: https://amzn.to/abc",
-    links: ["https://amzn.to/abc"],
+    text: "Loja oficial Amazon: https://www.amazon.com.br/dp/ABC",
+    links: ["https://www.amazon.com.br/dp/ABC"],
     ...overrides,
   };
 }
@@ -95,11 +96,7 @@ function makeService(
           messages.find((message) => message.id === where.id) ?? null,
       },
       affiliateLinkCache: {
-        findUnique: async ({
-          where,
-        }: {
-          where: { originalUrlHash: string };
-        }) =>
+        findUnique: async ({ where }: { where: { originalUrlHash: string } }) =>
           cacheEntries.find(
             (entry) => entry.originalUrlHash === where.originalUrlHash,
           ) ?? null,
@@ -109,10 +106,7 @@ function makeService(
           update,
         }: {
           where: { originalUrlHash: string };
-          create: Omit<
-            AffiliateLinkCache,
-            "id" | "createdAt" | "updatedAt"
-          >;
+          create: Omit<AffiliateLinkCache, "id" | "createdAt" | "updatedAt">;
           update: Partial<AffiliateLinkCache>;
         }) => {
           const existing = cacheEntries.find(
@@ -147,6 +141,7 @@ function makeService(
           canForward: true,
         },
     } as never,
+    new AmazonAffiliateProvider(),
   );
 }
 
@@ -157,12 +152,17 @@ describe("AffiliateLinkRewriterService", () => {
     ]);
 
     assert.deepEqual(
-      await service.rewriteUrlForUser("test-user", "https://amzn.to/abc"),
+      await service.rewriteUrlForUser(
+        "test-user",
+        "https://www.amazon.com.br/dp/ABC",
+      ),
       {
-        originalUrl: "https://amzn.to/abc",
-        rewrittenUrl: "https://amzn.to/abc?tag=meutag-20",
+        originalUrl: "https://www.amazon.com.br/dp/ABC",
+        rewrittenUrl: "https://www.amazon.com.br/dp/ABC?tag=meutag-20",
         marketplace: Marketplace.AMAZON,
         changed: true,
+        canForward: true,
+        tag: "meutag-20",
       },
     );
   });
@@ -177,7 +177,10 @@ describe("AffiliateLinkRewriterService", () => {
       "https://amazon.com/dp/abc",
     );
 
-    assert.equal(result.rewrittenUrl, "https://amazon.com/dp/abc?tag=fallback-20");
+    assert.equal(
+      result.rewrittenUrl,
+      "https://amazon.com/dp/abc?tag=fallback-20",
+    );
   });
 
   it("rewrites Mercado Livre links with the real provider result", async () => {
@@ -235,7 +238,10 @@ describe("AffiliateLinkRewriterService", () => {
 
     assert.equal(first.cacheHit, undefined);
     assert.equal(cacheEntries.length, 1);
-    assert.equal(cacheEntries[0]?.affiliateUrl, "https://meli.la/cached-affiliate");
+    assert.equal(
+      cacheEntries[0]?.affiliateUrl,
+      "https://meli.la/cached-affiliate",
+    );
     assert.equal(cacheEntries[0]?.source, "cta");
     assert.equal(second.cacheHit, true);
     assert.equal(second.reason, "CACHE_HIT");
@@ -253,7 +259,10 @@ describe("AffiliateLinkRewriterService", () => {
       "https://shope.ee/abc",
     );
 
-    assert.equal(result.rewrittenUrl, "https://shope.ee/abc?affiliate=shopee-aff");
+    assert.equal(
+      result.rewrittenUrl,
+      "https://shope.ee/abc?affiliate=shopee-aff",
+    );
   });
 
   it("preserves existing query params", async () => {
@@ -263,10 +272,13 @@ describe("AffiliateLinkRewriterService", () => {
 
     const result = await service.rewriteUrlForUser(
       "test-user",
-      "https://amzn.to/abc?utm=a",
+      "https://www.amazon.com.br/dp/ABC?utm=a",
     );
 
-    assert.equal(result.rewrittenUrl, "https://amzn.to/abc?utm=a&tag=meutag-20");
+    assert.equal(
+      result.rewrittenUrl,
+      "https://www.amazon.com.br/dp/ABC?utm=a&tag=meutag-20",
+    );
   });
 
   it("returns unchanged for unknown marketplaces", async () => {
@@ -288,13 +300,17 @@ describe("AffiliateLinkRewriterService", () => {
     const service = makeService([]);
 
     assert.deepEqual(
-      await service.rewriteUrlForUser("test-user", "https://amzn.to/abc"),
+      await service.rewriteUrlForUser(
+        "test-user",
+        "https://www.amazon.com.br/dp/ABC",
+      ),
       {
-        originalUrl: "https://amzn.to/abc",
-        rewrittenUrl: "https://amzn.to/abc",
+        originalUrl: "https://www.amazon.com.br/dp/ABC",
+        rewrittenUrl: "https://www.amazon.com.br/dp/ABC",
         marketplace: Marketplace.AMAZON,
         changed: false,
-        reason: "MISSING_CREDENTIAL",
+        reason: "AMAZON_TAG_NOT_CONFIGURED",
+        canForward: false,
       },
     );
   });
@@ -306,14 +322,14 @@ describe("AffiliateLinkRewriterService", () => {
     ]);
 
     const result = await service.rewriteUrlsForUser("test-user", [
-      "https://amzn.to/abc",
+      "https://www.amazon.com.br/dp/ABC",
       "https://meli.la/xyz",
     ]);
 
     assert.deepEqual(
       result.map((item) => item.rewrittenUrl),
       [
-        "https://amzn.to/abc?tag=meutag-20",
+        "https://www.amazon.com.br/dp/ABC?tag=meutag-20",
         "https://meli.la/generated-affiliate",
       ],
     );
@@ -331,15 +347,17 @@ describe("AffiliateLinkRewriterService", () => {
         messageId: "message-id",
         changed: true,
         canForward: true,
-        originalText: "Loja oficial Amazon: https://amzn.to/abc",
+        originalText: "Loja oficial Amazon: https://www.amazon.com.br/dp/ABC",
         rewrittenText:
-          "Loja oficial Amazon: https://amzn.to/abc?tag=meutag-20",
+          "Loja oficial Amazon: https://www.amazon.com.br/dp/ABC?tag=meutag-20",
         rewrites: [
           {
-            originalUrl: "https://amzn.to/abc",
-            rewrittenUrl: "https://amzn.to/abc?tag=meutag-20",
+            originalUrl: "https://www.amazon.com.br/dp/ABC",
+            rewrittenUrl: "https://www.amazon.com.br/dp/ABC?tag=meutag-20",
             marketplace: Marketplace.AMAZON,
             changed: true,
+            canForward: true,
+            tag: "meutag-20",
           },
         ],
       },
@@ -380,8 +398,8 @@ describe("AffiliateLinkRewriterService", () => {
       ],
       [
         makeMessage({
-          text: "Ofertas https://amzn.to/abc e https://meli.la/xyz",
-          links: ["https://amzn.to/abc", "https://meli.la/xyz"],
+          text: "Ofertas https://www.amazon.com.br/dp/ABC e https://meli.la/xyz",
+          links: ["https://www.amazon.com.br/dp/ABC", "https://meli.la/xyz"],
         }),
       ],
     );
@@ -393,7 +411,7 @@ describe("AffiliateLinkRewriterService", () => {
 
     assert.equal(
       result.rewrittenText,
-      "Ofertas https://amzn.to/abc?tag=meutag-20 e https://meli.la/generated-affiliate",
+      "Ofertas https://www.amazon.com.br/dp/ABC?tag=meutag-20 e https://meli.la/generated-affiliate",
     );
     assert.equal(result.changed, true);
     assert.equal(result.rewrites.length, 2);
@@ -492,14 +510,20 @@ describe("AffiliateLinkRewriterService", () => {
     );
 
     assert.equal(result.changed, false);
-    assert.equal(result.rewrittenText, "Loja oficial Amazon: https://amzn.to/abc");
+    assert.equal(
+      result.rewrittenText,
+      "Loja oficial Amazon: https://www.amazon.com.br/dp/ABC",
+    );
+    assert.equal(result.canForward, false);
+    assert.equal(result.reason, "AMAZON_TAG_NOT_CONFIGURED");
     assert.deepEqual(result.rewrites, [
       {
-        originalUrl: "https://amzn.to/abc",
-        rewrittenUrl: "https://amzn.to/abc",
+        originalUrl: "https://www.amazon.com.br/dp/ABC",
+        rewrittenUrl: "https://www.amazon.com.br/dp/ABC",
         marketplace: Marketplace.AMAZON,
         changed: false,
-        reason: "MISSING_CREDENTIAL",
+        reason: "AMAZON_TAG_NOT_CONFIGURED",
+        canForward: false,
       },
     ]);
   });
@@ -517,11 +541,13 @@ describe("AffiliateLinkRewriterService", () => {
     const ssid = "secret-session";
     let requestUrl = "";
     let requestBody: unknown;
-    let requestConfig: {
-      headers?: Record<string, string>;
-      validateStatus?: (status: number) => boolean;
-      maxRedirects?: number;
-    } | undefined;
+    let requestConfig:
+      | {
+          headers?: Record<string, string>;
+          validateStatus?: (status: number) => boolean;
+          maxRedirects?: number;
+        }
+      | undefined;
     axios.post = (async (url, body, config) => {
       requestUrl = url;
       requestBody = body;
@@ -557,10 +583,7 @@ describe("AffiliateLinkRewriterService", () => {
       requestUrl,
       "https://www.mercadolivre.com.br/affiliate-program/api/v2/stripe/user/links",
     );
-    assert.equal(
-      requestConfig?.headers?.Cookie,
-      `ssid=${ssid}`,
-    );
+    assert.equal(requestConfig?.headers?.Cookie, `ssid=${ssid}`);
     assert.equal(
       requestConfig?.headers?.Origin,
       "https://produto.mercadolivre.com.br",

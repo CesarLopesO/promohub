@@ -53,6 +53,7 @@ export type MercadoLivreSocialDebug = {
 export type AffiliateProviderResult = {
   rewrittenUrl: string;
   changed: boolean;
+  tag?: string;
   mode?: "real" | "legacy" | "disabled";
   reason?: string;
   error?: string;

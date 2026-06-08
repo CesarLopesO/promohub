@@ -46,6 +46,7 @@ function makeRoute(overrides: Partial<MessageRoute> = {}): MessageRoute {
     sessionId: "wa_xxx",
     sourceGroupJid: "source@g.us",
     destinationGroupJid: "destination@g.us",
+    destinationInviteUrl: null,
     isActive: true,
     createdAt: new Date("2026-06-01T12:00:00.000Z"),
     updatedAt: new Date("2026-06-01T12:00:00.000Z"),
@@ -74,6 +75,7 @@ function makeService(options?: {
   sessionStatus?: string;
   sendMessageError?: Error;
   sendMessageResult?: unknown;
+  generatedInviteUrls?: Record<string, string | null>;
 }) {
   const routes = [...(options?.routes ?? [])];
   const messages = options?.messages ?? [];
@@ -113,7 +115,10 @@ function makeService(options?: {
           return existing;
         }
 
-        const route = makeRoute({ ...create, id: `route-${routes.length + 1}` });
+        const route = makeRoute({
+          ...create,
+          id: `route-${routes.length + 1}`,
+        });
         routes.push(route);
 
         return route;
@@ -122,22 +127,16 @@ function makeService(options?: {
         routes.filter((route) =>
           Object.entries(where).every(
             ([key, value]) =>
-              value === undefined ||
-              route[key as keyof MessageRoute] === value,
+              value === undefined || route[key as keyof MessageRoute] === value,
           ),
         ),
       findUnique: async ({ where }: { where: { id: string } }) =>
         routes.find((route) => route.id === where.id) ?? null,
-      findFirst: async ({
-        where,
-      }: {
-        where: Partial<MessageRoute>;
-      }) =>
+      findFirst: async ({ where }: { where: Partial<MessageRoute> }) =>
         routes.find((route) =>
           Object.entries(where).every(
             ([key, value]) =>
-              value === undefined ||
-              route[key as keyof MessageRoute] === value,
+              value === undefined || route[key as keyof MessageRoute] === value,
           ),
         ) ?? null,
       update: async ({
@@ -187,7 +186,11 @@ function makeService(options?: {
             message.destinationGroupJid === where.destinationGroupJid &&
             message.status === where.status,
         ) ?? null,
-      create: async ({ data }: { data: Omit<StoredForwarded, "id" | "createdAt" | "updatedAt"> }) => {
+      create: async ({
+        data,
+      }: {
+        data: Omit<StoredForwarded, "id" | "createdAt" | "updatedAt">;
+      }) => {
         const message = {
           id: `forwarded-${forwarded.length + 1}`,
           createdAt: new Date("2026-06-01T12:00:00.000Z"),
@@ -224,10 +227,9 @@ function makeService(options?: {
               ? "https://meli.la/original"
               : "https://amzn.to/abc",
             rewrittenUrl: isMercadoLivre
-              ? options?.rewrittenText ?? "https://meli.la/generated"
+              ? (options?.rewrittenText ?? "https://meli.la/generated")
               : "https://amzn.to/abc?tag=meutag-20",
-            marketplace:
-              options?.rewriteMarketplace ?? Marketplace.AMAZON,
+            marketplace: options?.rewriteMarketplace ?? Marketplace.AMAZON,
             changed: Boolean(options?.rewrittenText),
             ...(options?.rewriteMode ? { mode: options.rewriteMode } : {}),
             ...(options?.rewriteSameProduct !== undefined
@@ -269,10 +271,26 @@ function makeService(options?: {
       },
     }),
   };
+  const inviteCalls: string[] = [];
+  const inviteService = {
+    getDestinationInviteUrl: async (
+      _sessionId: string,
+      destinationGroupJid: string,
+      overrideUrl?: string | null,
+    ) => {
+      inviteCalls.push(destinationGroupJid);
+      return (
+        overrideUrl ??
+        options?.generatedInviteUrls?.[destinationGroupJid] ??
+        null
+      );
+    },
+  };
   const forwardingService = new MessageForwardingService(
     prisma as never,
     linkRewriter as never,
     sessionManager as never,
+    inviteService as never,
   );
   const planLimits = {
     assertCanCreateRoute: async () => undefined,
@@ -284,10 +302,12 @@ function makeService(options?: {
       linkRewriter as never,
       forwardingService,
       planLimits as never,
+      inviteService as never,
     ),
     forwardingService,
     forwarded,
     sentMessages,
+    inviteCalls,
   };
 }
 
@@ -300,10 +320,15 @@ describe("MessageRoutesService", () => {
       sessionId: "wa_xxx",
       sourceGroupJid: "source@g.us",
       destinationGroupJid: "destination@g.us",
+      destinationInviteUrl: "https://chat.whatsapp.com/DESTINO",
     });
 
     assert.equal(route.isActive, true);
     assert.equal(route.destinationGroupJid, "destination@g.us");
+    assert.equal(
+      route.destinationInviteUrl,
+      "https://chat.whatsapp.com/DESTINO",
+    );
   });
 
   it("blocks an exact active duplicate route", async () => {
@@ -444,7 +469,10 @@ describe("MessageRoutesService", () => {
     });
 
     assert.deepEqual(preview.destinationGroups, ["destination@g.us"]);
-    assert.equal(preview.rewrittenText, "Promo https://amzn.to/abc?tag=meutag-20");
+    assert.equal(
+      preview.rewrittenText,
+      "Promo https://amzn.to/abc?tag=meutag-20",
+    );
     assert.equal(preview.canForward, true);
   });
 
@@ -473,6 +501,137 @@ describe("MessageRoutesService", () => {
       "destination-1@g.us",
       "destination-2@g.us",
     ]);
+  });
+
+  it("replaces WhatsApp links in preview with the route invite URL", async () => {
+    const destinationInviteUrl = "https://chat.whatsapp.com/DESTINO";
+    const { service } = makeService({
+      routes: [makeRoute({ destinationInviteUrl })],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Entre em https://whatsapp.com/channel/terceiro",
+        },
+      ],
+    });
+
+    const preview = await service.preview({
+      messageId: "message-id",
+      userId: "test-user",
+    });
+
+    assert.equal(preview.rewrittenText, `Entre em ${destinationInviteUrl}`);
+    assert.deepEqual(preview.rewrites.at(-1), {
+      originalUrl: "https://whatsapp.com/channel/terceiro",
+      rewrittenUrl: destinationInviteUrl,
+      marketplace: Marketplace.WHATSAPP,
+      changed: true,
+      canForward: true,
+    });
+    assert.equal(preview.canForward, true);
+  });
+
+  it("automatically generates the invite URL when the route has no override", async () => {
+    const originalUrl = "https://chat.whatsapp.com/terceiro";
+    const generatedInviteUrl = "https://chat.whatsapp.com/GERADO";
+    const { service } = makeService({
+      routes: [makeRoute()],
+      generatedInviteUrls: {
+        "destination@g.us": generatedInviteUrl,
+      },
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: `Entre em ${originalUrl}`,
+        },
+      ],
+    });
+
+    const preview = await service.preview({
+      messageId: "message-id",
+      userId: "test-user",
+    });
+
+    assert.equal(preview.rewrittenText, `Entre em ${generatedInviteUrl}`);
+    assert.deepEqual(preview.warnings, []);
+    assert.equal(preview.rewrites.at(-1)?.changed, true);
+    assert.equal(preview.canForward, true);
+  });
+
+  it("keeps WhatsApp links and warns when invite generation fails", async () => {
+    const originalUrl = "https://chat.whatsapp.com/terceiro";
+    const { service } = makeService({
+      routes: [makeRoute()],
+      generatedInviteUrls: {
+        "destination@g.us": null,
+      },
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: `Entre em ${originalUrl}`,
+        },
+      ],
+    });
+
+    const preview = await service.preview({
+      messageId: "message-id",
+      userId: "test-user",
+    });
+
+    assert.equal(preview.rewrittenText, `Entre em ${originalUrl}`);
+    assert.deepEqual(preview.warnings, ["WHATSAPP_INVITE_CODE_FAILED"]);
+    assert.equal(preview.rewrites.at(-1)?.changed, false);
+    assert.equal(
+      preview.rewrites.at(-1)?.warning,
+      "WHATSAPP_INVITE_CODE_FAILED",
+    );
+    assert.equal(preview.canForward, true);
+  });
+
+  it("returns a different preview for each destination", async () => {
+    const { service } = makeService({
+      routes: [
+        makeRoute({
+          id: "route-1",
+          destinationGroupJid: "destination-1@g.us",
+        }),
+        makeRoute({
+          id: "route-2",
+          destinationGroupJid: "destination-2@g.us",
+        }),
+      ],
+      generatedInviteUrls: {
+        "destination-1@g.us": "https://chat.whatsapp.com/DESTINO1",
+        "destination-2@g.us": "https://chat.whatsapp.com/DESTINO2",
+      },
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Entre em https://chat.whatsapp.com/terceiro",
+        },
+      ],
+    });
+
+    const preview = await service.preview({
+      messageId: "message-id",
+      userId: "test-user",
+    });
+
+    assert.deepEqual(
+      preview.destinationPreviews.map((item) => item.rewrittenText),
+      [
+        "Entre em https://chat.whatsapp.com/DESTINO1",
+        "Entre em https://chat.whatsapp.com/DESTINO2",
+      ],
+    );
   });
 
   it("forwards with a valid route", async () => {
@@ -592,6 +751,167 @@ describe("MessageRoutesService", () => {
     assert.equal(sentMessages.length, 1);
   });
 
+  it("forwards Amazon affiliate and replaces the WhatsApp link", async () => {
+    const destinationInviteUrl = "https://chat.whatsapp.com/DESTINO";
+    const { forwardingService, sentMessages } = makeService({
+      routes: [makeRoute({ destinationInviteUrl })],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://amzn.to/abc https://wa.me/559999",
+          links: ["https://amzn.to/abc", "https://wa.me/559999"],
+        },
+      ],
+      rewrittenText:
+        "Oferta https://amzn.to/abc?tag=meutag-20 https://wa.me/559999",
+    });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+      }
+    ).waitRandomDelay = async () => undefined;
+
+    await forwardingService.forwardMessageById("test-user", "message-id", {
+      mode: "auto",
+    });
+
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      `Oferta https://amzn.to/abc?tag=meutag-20 ${destinationInviteUrl}`,
+    );
+  });
+
+  it("forwards Mercado Livre affiliate and replaces the WhatsApp link", async () => {
+    const destinationInviteUrl = "https://chat.whatsapp.com/DESTINO";
+    const { forwardingService, sentMessages } = makeService({
+      routes: [makeRoute({ destinationInviteUrl })],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://meli.la/original chat.whatsapp.com/terceiro",
+          links: ["https://meli.la/original", "chat.whatsapp.com/terceiro"],
+        },
+      ],
+      rewrittenText:
+        "Oferta https://meli.la/generated chat.whatsapp.com/terceiro",
+      rewriteResults: [
+        {
+          originalUrl: "https://meli.la/original",
+          rewrittenUrl: "https://meli.la/generated",
+          marketplace: Marketplace.MERCADO_LIVRE,
+          changed: true,
+          canForward: true,
+        },
+      ],
+    });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+      }
+    ).waitRandomDelay = async () => undefined;
+
+    await forwardingService.forwardMessageById("test-user", "message-id", {
+      mode: "auto",
+    });
+
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      `Oferta https://meli.la/generated ${destinationInviteUrl}`,
+    );
+  });
+
+  it("generates distinct invite links while forwarding to multiple destinations", async () => {
+    const { forwardingService, sentMessages, forwarded } = makeService({
+      routes: [
+        makeRoute({
+          id: "route-1",
+          destinationGroupJid: "destination-1@g.us",
+        }),
+        makeRoute({
+          id: "route-2",
+          destinationGroupJid: "destination-2@g.us",
+        }),
+      ],
+      generatedInviteUrls: {
+        "destination-1@g.us": "https://chat.whatsapp.com/DESTINO1",
+        "destination-2@g.us": "https://chat.whatsapp.com/DESTINO2",
+      },
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://amzn.to/abc https://wa.me/terceiro",
+          links: ["https://amzn.to/abc", "https://wa.me/terceiro"],
+        },
+      ],
+      rewrittenText:
+        "Oferta https://amzn.to/abc?tag=meutag-20 https://wa.me/terceiro",
+    });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+      }
+    ).waitRandomDelay = async () => undefined;
+
+    await forwardingService.forwardMessageById("test-user", "message-id", {
+      mode: "auto",
+    });
+
+    assert.deepEqual(
+      sentMessages.map(
+        (message) => (message.content as { text?: string }).text,
+      ),
+      [
+        "Oferta https://amzn.to/abc?tag=meutag-20 https://chat.whatsapp.com/DESTINO1",
+        "Oferta https://amzn.to/abc?tag=meutag-20 https://chat.whatsapp.com/DESTINO2",
+      ],
+    );
+    assert.deepEqual(
+      forwarded.map((message) => message.rewrittenText),
+      [
+        "Oferta https://amzn.to/abc?tag=meutag-20 https://chat.whatsapp.com/DESTINO1",
+        "Oferta https://amzn.to/abc?tag=meutag-20 https://chat.whatsapp.com/DESTINO2",
+      ],
+    );
+  });
+
+  it("keeps the external link and warns when automatic invite generation fails", async () => {
+    const originalText = "Oferta https://wa.me/terceiro";
+    const { forwardingService, sentMessages } = makeService({
+      routes: [makeRoute()],
+      generatedInviteUrls: {
+        "destination@g.us": null,
+      },
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: originalText,
+          links: ["https://wa.me/terceiro"],
+        },
+      ],
+    });
+
+    const result = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+    );
+
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      originalText,
+    );
+    assert.deepEqual(result.results[0]?.warnings, [
+      "WHATSAPP_INVITE_CODE_FAILED",
+    ]);
+  });
+
   it("auto forward sends when all Mercado Livre links were converted", async () => {
     const { forwardingService, forwarded, sentMessages } = makeService({
       routes: [makeRoute()],
@@ -604,7 +924,8 @@ describe("MessageRoutesService", () => {
           links: ["https://meli.la/one", "https://meli.la/two"],
         },
       ],
-      rewrittenText: "https://meli.la/generated-one https://meli.la/generated-two",
+      rewrittenText:
+        "https://meli.la/generated-one https://meli.la/generated-two",
       rewriteResults: [
         {
           originalUrl: "https://meli.la/one",
@@ -1069,10 +1390,7 @@ describe("MessageRoutesService", () => {
 
     assert.equal(response.sentCount, 0);
     assert.equal(response.skippedCount, 1);
-    assert.equal(
-      response.results[0]?.error,
-      "MERCADO_LIVRE_GENERATION_FAILED",
-    );
+    assert.equal(response.results[0]?.error, "MERCADO_LIVRE_GENERATION_FAILED");
     assert.deepEqual(sentMessages, []);
   });
 

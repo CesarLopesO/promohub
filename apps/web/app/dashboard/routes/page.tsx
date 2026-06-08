@@ -11,16 +11,14 @@ import {
   PageHeader,
 } from "@/src/components/ui-state";
 import { apiFetch } from "@/src/lib/api";
-import {
-  readSessionLabel,
-  readSessionLabels,
-} from "@/src/lib/session-labels";
+import { readSessionLabel, readSessionLabels } from "@/src/lib/session-labels";
 
 type MessageRoute = {
   id: string;
   sessionId: string;
   sourceGroupJid: string;
   destinationGroupJid: string;
+  destinationInviteUrl?: string;
   isActive: boolean;
   createdAt: string;
 };
@@ -48,6 +46,7 @@ export default function RoutesPage() {
   const [labels, setLabels] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [inviteDrafts, setInviteDrafts] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   const groupNameByKey = useMemo(() => {
@@ -95,12 +94,22 @@ export default function RoutesPage() {
 
         if (!cancelled) {
           setRoutes(routeResult);
+          setInviteDrafts(
+            Object.fromEntries(
+              routeResult.map((route) => [
+                route.id,
+                route.destinationInviteUrl ?? "",
+              ]),
+            ),
+          );
           setSessions(sessionResult);
           setGroupsBySession(groupsResult);
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Erro ao carregar rotas.");
+          setError(
+            err instanceof Error ? err.message : "Erro ao carregar rotas.",
+          );
         }
       } finally {
         if (!cancelled) {
@@ -135,6 +144,27 @@ export default function RoutesPage() {
 
   async function removeRoute(id: string) {
     await updateRoute(id, false);
+  }
+
+  async function saveInviteUrl(route: MessageRoute) {
+    setSavingId(route.id);
+    setError(null);
+
+    try {
+      await apiFetch<MessageRoute>(`/routes/${route.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          destinationInviteUrl: inviteDrafts[route.id]?.trim() || null,
+        }),
+      });
+      await loadRoutes();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Erro ao salvar link de destino.",
+      );
+    } finally {
+      setSavingId(null);
+    }
   }
 
   return (
@@ -210,11 +240,45 @@ export default function RoutesPage() {
                             : route.sessionId
                         }
                       />
-                      <Row label="Status" value={route.isActive ? "Ativa" : "Pausada"} />
+                      <Row
+                        label="Status"
+                        value={route.isActive ? "Ativa" : "Pausada"}
+                      />
                     </dl>
                     <p className="mt-3 font-mono text-xs text-slate-400">
-                      {route.sourceGroupJid} {" para "} {route.destinationGroupJid}
+                      {route.sourceGroupJid} {" para "}{" "}
+                      {route.destinationGroupJid}
                     </p>
+                    <label className="mt-4 block text-sm font-medium text-slate-700">
+                      Link do seu grupo/canal destino
+                      <input
+                        className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
+                        onChange={(event) =>
+                          setInviteDrafts((current) => ({
+                            ...current,
+                            [route.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="https://chat.whatsapp.com/SEU_LINK"
+                        type="url"
+                        value={inviteDrafts[route.id] ?? ""}
+                      />
+                      <span className="mt-1 block text-xs font-normal text-slate-500">
+                        Opcional. Se vazio, o Promohub tenta gerar
+                        automaticamente o link de convite do grupo destino. O
+                        WhatsApp conectado precisa ser admin do grupo.
+                      </span>
+                    </label>
+                    <Button
+                      className="mt-3"
+                      disabled={savingId === route.id}
+                      onClick={() => saveInviteUrl(route)}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      Salvar link
+                    </Button>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {route.isActive ? (

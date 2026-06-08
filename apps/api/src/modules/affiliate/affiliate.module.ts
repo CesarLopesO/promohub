@@ -9,15 +9,20 @@ import { AffiliateLinkRewriterService } from "./affiliate-link-rewriter.service"
 import { MercadoLivreAffiliateProvider } from "./providers/mercadolivre.provider";
 import { MercadoLivreLinkGeneratorService } from "./services/mercadolivre-link-generator.service";
 import { AffiliateGeneratorConfigService } from "./services/affiliate-generator-config.service";
+import { AmazonAffiliateProvider } from "./providers/amazon.provider";
 
 @Module({
   imports: [AuthModule],
-  controllers: [AffiliateCredentialsController, AffiliateLinkRewriterController],
+  controllers: [
+    AffiliateCredentialsController,
+    AffiliateLinkRewriterController,
+  ],
   providers: [
     PrismaService,
     AffiliateCredentialsService,
     AffiliateLinkRewriterService,
     AffiliateGeneratorConfigService,
+    AmazonAffiliateProvider,
     MercadoLivreAffiliateProvider,
     MercadoLivreLinkGeneratorService,
   ],
