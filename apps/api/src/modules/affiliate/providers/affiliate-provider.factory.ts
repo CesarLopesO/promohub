@@ -6,12 +6,13 @@ import { ShopeeAffiliateProvider } from "./shopee.provider";
 
 export function getAffiliateProvider(
   marketplace: Marketplace,
+  mercadoLivreProvider: MercadoLivreAffiliateProvider,
 ): AffiliateProvider | null {
   switch (marketplace) {
     case Marketplace.AMAZON:
       return new AmazonAffiliateProvider();
     case Marketplace.MERCADO_LIVRE:
-      return new MercadoLivreAffiliateProvider();
+      return mercadoLivreProvider;
     case Marketplace.SHOPEE:
       return new ShopeeAffiliateProvider();
     case Marketplace.UNKNOWN:

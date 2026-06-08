@@ -21,6 +21,7 @@ import {
   extractLinks,
   extractMessageText,
   getMessageType,
+  isProtocolMessage,
   isReactionMessage,
   messageHasMedia,
 } from "./whatsapp-message.helpers";
@@ -103,13 +104,10 @@ export class WhatsAppMessagesService {
     const groupJid = message.key.remoteJid;
     const messageId = message.key.id;
 
-    if (
-      !groupJid ||
-      !groupJid.endsWith("@g.us") ||
-      message.key.fromMe ||
-      !messageId ||
-      isReactionMessage(message)
-    ) {
+    const skipReason = this.readSkipReason(message);
+
+    if (skipReason) {
+      console.log(`[WA_MESSAGE] skipped reason=${skipReason}`);
       return;
     }
 
@@ -119,12 +117,15 @@ export class WhatsAppMessagesService {
     const marketplaces = this.detectMarketplaces(links);
 
     try {
+      console.log(
+        `[WA_MESSAGE] saving messageId=${messageId} groupJid=${groupJid} textLength=${text?.length ?? 0}`,
+      );
       const savedMessage = await this.prisma.whatsAppMessage.create({
         data: {
           sessionId,
-          groupJid,
+          groupJid: groupJid!,
           senderJid: message.key.participant,
-          messageId,
+          messageId: messageId!,
           messageType,
           text,
           hasMedia: messageHasMedia(messageType),
@@ -150,7 +151,7 @@ export class WhatsAppMessagesService {
         if (links.length > 0) {
           await this.prisma.whatsAppMessage.update({
             where: {
-              messageId,
+              messageId: messageId!,
             },
             data: {
               text,
@@ -165,6 +166,36 @@ export class WhatsAppMessagesService {
 
       throw error;
     }
+  }
+
+  private readSkipReason(message: WAMessage): string | undefined {
+    const groupJid = message.key.remoteJid;
+
+    if (message.key.fromMe) {
+      return "FROM_ME";
+    }
+
+    if (!groupJid) {
+      return "MISSING_REMOTE_JID";
+    }
+
+    if (!groupJid.endsWith("@g.us")) {
+      return "PRIVATE_CHAT";
+    }
+
+    if (!message.key.id) {
+      return "MISSING_MESSAGE_ID";
+    }
+
+    if (isReactionMessage(message)) {
+      return "REACTION";
+    }
+
+    if (isProtocolMessage(message)) {
+      return "PROTOCOL";
+    }
+
+    return undefined;
   }
 
   private runAutoForwardIfRouteExists(
@@ -201,9 +232,10 @@ export class WhatsAppMessagesService {
 
   private async findSession(sessionRecordId: string) {
     const normalizedId = this.normalizeRequiredString(sessionRecordId, "id");
-    const session = await this.prisma.whatsAppSession.findUnique({
+    const session = await this.prisma.whatsAppSession.findFirst({
       where: {
         id: normalizedId,
+        deletedAt: null,
       },
     });
 

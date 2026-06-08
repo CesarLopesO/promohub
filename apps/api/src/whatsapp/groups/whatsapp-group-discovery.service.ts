@@ -17,8 +17,11 @@ export class WhatsAppGroupDiscoveryService {
     private readonly sessionManager: WhatsAppSessionManager,
   ) {}
 
-  async listGroups(sessionRecordId: string): Promise<WhatsAppGroupDto[]> {
-    const session = await this.sessionManager.readStatus(sessionRecordId);
+  async listGroups(
+    sessionRecordId: string,
+    userId?: string,
+  ): Promise<WhatsAppGroupDto[]> {
+    const session = await this.sessionManager.readStatus(sessionRecordId, userId);
 
     if (session.status !== "CONNECTED") {
       throw new BadRequestException(
@@ -40,9 +43,10 @@ export class WhatsAppGroupDiscoveryService {
 
   async syncGroups(
     sessionRecordId: string,
+    userId?: string,
   ): Promise<WhatsAppGroupSyncResultDto> {
     const { session, socket } =
-      await this.sessionManager.getConnectedSocket(sessionRecordId);
+      await this.sessionManager.getConnectedSocket(sessionRecordId, userId);
     const participatingGroups = await socket.groupFetchAllParticipating();
     const groupMetadata = Object.values(participatingGroups).filter((group) =>
       this.isDiscoverableGroup(group),

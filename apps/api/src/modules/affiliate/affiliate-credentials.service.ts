@@ -6,6 +6,10 @@ import {
 import { Prisma } from "@prisma/client";
 
 import { PrismaService } from "../../prisma.service";
+import {
+  encryptCredentialSecrets,
+  hasSessionToken,
+} from "./affiliate-credential-secrets";
 import type { CreateAffiliateCredentialDto } from "./dto/create-affiliate-credential.dto";
 import type { UpdateAffiliateCredentialDto } from "./dto/update-affiliate-credential.dto";
 import { Marketplace } from "./helpers/detect-marketplace";
@@ -15,10 +19,10 @@ export type AffiliateCredentialDto = {
   userId: string;
   marketplace: Marketplace;
   affiliateId?: string;
-  apiKey?: string;
-  apiSecret?: string;
   trackingId?: string;
-  metadata?: unknown;
+  hasApiKey: boolean;
+  hasApiSecret: boolean;
+  hasSessionToken: boolean;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -29,7 +33,7 @@ export class AffiliateCredentialsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(
-    body: CreateAffiliateCredentialDto,
+    body: CreateAffiliateCredentialDto & { userId: string },
   ): Promise<AffiliateCredentialDto> {
     const userId = this.normalizeRequiredString(body.userId, "userId");
     const marketplace = this.normalizeMarketplace(body.marketplace);
@@ -80,8 +84,11 @@ export class AffiliateCredentialsService {
     return credentials.map((credential) => this.toDto(credential));
   }
 
-  async findOne(id: string): Promise<AffiliateCredentialDto> {
-    const credential = await this.findCredential(id);
+  async findOne(
+    id: string,
+    userId?: string,
+  ): Promise<AffiliateCredentialDto> {
+    const credential = await this.findCredential(id, userId);
 
     return this.toDto(credential);
   }
@@ -89,9 +96,15 @@ export class AffiliateCredentialsService {
   async update(
     id: string,
     body: UpdateAffiliateCredentialDto,
+    userId?: string,
   ): Promise<AffiliateCredentialDto> {
-    const credential = await this.findCredential(id);
+    const credential = await this.findCredential(id, userId);
     const data = this.toCredentialData(body);
+    const migratedSecrets = encryptCredentialSecrets({
+      apiKey: credential.apiKey,
+      apiSecret: credential.apiSecret,
+      metadata: credential.metadata as Prisma.InputJsonValue,
+    });
     const marketplace =
       body.marketplace === undefined
         ? credential.marketplace
@@ -102,6 +115,7 @@ export class AffiliateCredentialsService {
         id: credential.id,
       },
       data: {
+        ...migratedSecrets,
         ...data,
         marketplace,
         ...(body.isActive === undefined ? {} : { isActive: body.isActive }),
@@ -111,8 +125,11 @@ export class AffiliateCredentialsService {
     return this.toDto(updated);
   }
 
-  async softDelete(id: string): Promise<AffiliateCredentialDto> {
-    const credential = await this.findCredential(id);
+  async softDelete(
+    id: string,
+    userId?: string,
+  ): Promise<AffiliateCredentialDto> {
+    const credential = await this.findCredential(id, userId);
     const updated = await this.prisma.affiliateCredential.update({
       where: {
         id: credential.id,
@@ -125,13 +142,23 @@ export class AffiliateCredentialsService {
     return this.toDto(updated);
   }
 
-  private async findCredential(id: string) {
+  private async findCredential(id: string, userId?: string) {
     const normalizedId = this.normalizeRequiredString(id, "id");
-    const credential = await this.prisma.affiliateCredential.findUnique({
-      where: {
-        id: normalizedId,
-      },
-    });
+    const normalizedUserId = userId
+      ? this.normalizeRequiredString(userId, "userId")
+      : undefined;
+    const credential = normalizedUserId
+      ? await this.prisma.affiliateCredential.findFirst({
+          where: {
+            id: normalizedId,
+            userId: normalizedUserId,
+          },
+        })
+      : await this.prisma.affiliateCredential.findUnique({
+          where: {
+            id: normalizedId,
+          },
+        });
 
     if (!credential) {
       throw new NotFoundException("Affiliate credential not found.");
@@ -143,7 +170,7 @@ export class AffiliateCredentialsService {
   private toCredentialData(
     body: CreateAffiliateCredentialDto | UpdateAffiliateCredentialDto,
   ) {
-    return {
+    const data = {
       ...(body.affiliateId === undefined
         ? {}
         : { affiliateId: this.normalizeNullableString(body.affiliateId) }),
@@ -159,6 +186,11 @@ export class AffiliateCredentialsService {
       ...(body.metadata === undefined
         ? {}
         : { metadata: this.toJson(body.metadata) }),
+    };
+
+    return {
+      ...data,
+      ...encryptCredentialSecrets(data),
     };
   }
 
@@ -180,10 +212,10 @@ export class AffiliateCredentialsService {
       userId: credential.userId,
       marketplace: this.normalizeMarketplace(credential.marketplace),
       affiliateId: credential.affiliateId ?? undefined,
-      apiKey: credential.apiKey ?? undefined,
-      apiSecret: credential.apiSecret ?? undefined,
       trackingId: credential.trackingId ?? undefined,
-      metadata: credential.metadata ?? undefined,
+      hasApiKey: Boolean(credential.apiKey),
+      hasApiSecret: Boolean(credential.apiSecret),
+      hasSessionToken: hasSessionToken(credential.metadata),
       isActive: credential.isActive,
       createdAt: credential.createdAt,
       updatedAt: credential.updatedAt,

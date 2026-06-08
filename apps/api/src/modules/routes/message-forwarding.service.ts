@@ -95,6 +95,17 @@ export class MessageForwardingService {
       normalizedUserId,
       message.id,
     );
+    const hasBlockedLegacyRewrite =
+      mode === "auto" &&
+      process.env.MERCADO_LIVRE_LEGACY_FORWARD_ENABLED !== "true" &&
+      rewritePreview.rewrites.some(
+        (rewrite) => rewrite.changed && rewrite.mode === "legacy",
+      );
+
+    if (hasBlockedLegacyRewrite) {
+      console.log("[AUTO_FORWARD] skipped Mercado Livre legacy mode");
+      return this.toForwardResponse(message.id, []);
+    }
 
     if (
       mode === "auto" &&
@@ -106,9 +117,10 @@ export class MessageForwardingService {
 
     const rewrittenText =
       rewritePreview.rewrittenText ?? rewritePreview.originalText ?? "";
-    const session = await this.prisma.whatsAppSession.findUnique({
+    const session = await this.prisma.whatsAppSession.findFirst({
       where: {
         sessionId: message.sessionId,
+        deletedAt: null,
       },
     });
 

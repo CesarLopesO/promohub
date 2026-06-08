@@ -20,6 +20,8 @@ type StoredCredential = {
 
 describe("AffiliateCredentialsService", () => {
   it("creates, lists, updates, and soft deletes credentials", async () => {
+    process.env.APP_ENCRYPTION_KEY =
+      "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
     const createdAt = new Date("2026-06-01T12:00:00.000Z");
     const store = new Map<string, StoredCredential>();
     const prisma = {
@@ -83,8 +85,20 @@ describe("AffiliateCredentialsService", () => {
       userId: "test-user",
       marketplace: Marketplace.AMAZON,
       trackingId: "meutag-20",
+      apiKey: "api-key-secret",
+      apiSecret: "api-secret-value",
+      metadata: {
+        ssid: "plain-session-token",
+      },
     });
     const listed = await service.list("test-user");
+    const stored = store.get("test-user:amazon");
+
+    assert.ok(stored);
+    const encryptedSsid = (stored.metadata as { ssid: string }).ssid;
+    stored.apiKey = "legacy-plain-api-key";
+    stored.apiSecret = "legacy-plain-api-secret";
+    stored.metadata = { sessionToken: "legacy-plain-session-token" };
     const updated = await service.update(created.id, {
       affiliateId: "affiliate-1",
     });
@@ -93,8 +107,26 @@ describe("AffiliateCredentialsService", () => {
 
     assert.equal(created.isActive, true);
     assert.equal(created.trackingId, "meutag-20");
+    assert.equal(created.hasApiKey, true);
+    assert.equal(created.hasApiSecret, true);
+    assert.equal(created.hasSessionToken, true);
+    assert.equal("apiKey" in created, false);
+    assert.equal("apiSecret" in created, false);
+    assert.equal("metadata" in created, false);
+    assert.match(store.get("test-user:amazon")?.apiKey ?? "", /^enc:v1:/);
+    assert.match(store.get("test-user:amazon")?.apiSecret ?? "", /^enc:v1:/);
+    assert.match(
+      encryptedSsid,
+      /^enc:v1:/,
+    );
     assert.equal(listed.length, 1);
     assert.equal(updated.affiliateId, "affiliate-1");
+    assert.match(stored.apiKey ?? "", /^enc:v1:/);
+    assert.match(stored.apiSecret ?? "", /^enc:v1:/);
+    assert.match(
+      (stored.metadata as { sessionToken: string }).sessionToken,
+      /^enc:v1:/,
+    );
     assert.equal(deleted.isActive, false);
     assert.deepEqual(listedAfterDelete, []);
   });

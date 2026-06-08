@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "MessageRoute_userId_sessionId_sourceGroupJid_destinationGroupJi" RENAME TO "MessageRoute_userId_sessionId_sourceGroupJid_destinationGro_key";

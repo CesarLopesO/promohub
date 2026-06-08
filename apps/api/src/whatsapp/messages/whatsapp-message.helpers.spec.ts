@@ -1,7 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import type { WAMessage } from "@whiskeysockets/baileys";
 
-import { extractLinks } from "./whatsapp-message.helpers";
+import {
+  extractLinks,
+  extractMessageText,
+  isProtocolMessage,
+  isReactionMessage,
+} from "./whatsapp-message.helpers";
 
 describe("extractLinks", () => {
   it("captures https amzn.to links", () => {
@@ -49,5 +55,41 @@ describe("extractLinks", () => {
 
   it("returns an empty array for null text", () => {
     assert.deepEqual(extractLinks(null), []);
+  });
+});
+
+describe("WhatsApp message content", () => {
+  it("extracts text from ephemeral image captions", () => {
+    const message = {
+      message: {
+        ephemeralMessage: {
+          message: {
+            imageMessage: {
+              caption: "Oferta https://meli.la/teste",
+            },
+          },
+        },
+      },
+    } as WAMessage;
+
+    assert.equal(
+      extractMessageText(message),
+      "Oferta https://meli.la/teste",
+    );
+  });
+
+  it("detects reaction and protocol messages", () => {
+    assert.equal(
+      isReactionMessage({
+        message: { reactionMessage: { text: "👍" } },
+      } as WAMessage),
+      true,
+    );
+    assert.equal(
+      isProtocolMessage({
+        message: { protocolMessage: { type: 0 } },
+      } as WAMessage),
+      true,
+    );
   });
 });

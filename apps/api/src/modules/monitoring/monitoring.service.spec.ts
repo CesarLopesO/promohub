@@ -285,6 +285,10 @@ function matchesWhere(row: Record<string, unknown>, where?: Record<string, unkno
       return true;
     }
 
+    if (value === null) {
+      return row[key] === null || row[key] === undefined;
+    }
+
     if (isRecord(value) && Array.isArray(value.in)) {
       return value.in.includes(row[key]);
     }

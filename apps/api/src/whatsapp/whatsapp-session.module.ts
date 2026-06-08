@@ -1,6 +1,8 @@
 import { Module } from "@nestjs/common";
 
 import { AffiliateModule } from "../modules/affiliate/affiliate.module";
+import { AuthModule } from "../modules/auth/auth.module";
+import { PlansModule } from "../modules/plans/plans.module";
 import { MessageForwardingService } from "../modules/routes/message-forwarding.service";
 import { PrismaService } from "../prisma.service";
 import { BaileysPrismaAuthStore } from "./auth/baileys-prisma-auth.store";
@@ -9,11 +11,18 @@ import { WhatsAppMessagesController } from "./messages/whatsapp-messages.control
 import { WhatsAppMessagesService } from "./messages/whatsapp-messages.service";
 import { WhatsAppSessionCacheService } from "./session/whatsapp-session-cache.service";
 import { WhatsAppSessionManager } from "./session/whatsapp-session.manager";
-import { WhatsAppSessionController } from "./whatsapp-session.controller";
+import {
+  WhatsAppSessionController,
+  WhatsAppSessionsController,
+} from "./whatsapp-session.controller";
 
 @Module({
-  imports: [AffiliateModule],
-  controllers: [WhatsAppSessionController, WhatsAppMessagesController],
+  imports: [AffiliateModule, AuthModule, PlansModule],
+  controllers: [
+    WhatsAppSessionController,
+    WhatsAppSessionsController,
+    WhatsAppMessagesController,
+  ],
   providers: [
     PrismaService,
     BaileysPrismaAuthStore,

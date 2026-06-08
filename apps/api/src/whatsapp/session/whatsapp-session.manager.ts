@@ -19,6 +19,7 @@ import { randomUUID } from "crypto";
 import type { WhatsAppSession } from "@prisma/client";
 
 import { PrismaService } from "../../prisma.service";
+import { PlanLimitsService } from "../../modules/plans/plan-limits.service";
 import { BaileysPrismaAuthStore } from "../auth/baileys-prisma-auth.store";
 import type { WhatsAppSessionStatusDto } from "../dto/whatsapp-session-status.dto";
 import { WhatsAppMessagesService } from "../messages/whatsapp-messages.service";
@@ -26,8 +27,21 @@ import { WhatsAppSessionCacheService } from "./whatsapp-session-cache.service";
 
 type ManagedSession = {
   socket: WASocket;
+  listenerRegistered: boolean;
   qrCode?: string;
   qrCodeDataUrl?: string;
+};
+
+export type WhatsAppSessionDebugDto = {
+  id: string;
+  sessionId: string;
+  status: string;
+  hasSocket: boolean;
+  listenerRegistered: boolean;
+  groupsCount: number;
+  messagesCount: number;
+  lastMessageAt: Date | null;
+  routesCount: number;
 };
 
 const QR_WAIT_TIMEOUT_MS = 25_000;
@@ -39,6 +53,7 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     string,
     Promise<WhatsAppSessionStatusDto>
   >();
+  private readonly retiredSockets = new WeakSet<WASocket>();
   private readonly logger = pino({ level: "silent" });
 
   constructor(
@@ -46,11 +61,13 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     private readonly authStore: BaileysPrismaAuthStore,
     private readonly cache: WhatsAppSessionCacheService,
     private readonly messagesService: WhatsAppMessagesService,
+    private readonly planLimits: PlanLimitsService,
   ) {}
 
   async onModuleInit() {
     const sessions = await this.prisma.whatsAppSession.findMany({
       where: {
+        deletedAt: null,
         status: {
           in: ["CONNECTING", "QR_READY", "CONNECTED"],
         },
@@ -69,6 +86,8 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     const normalizedUserId = this.normalizeRequiredString(userId, "userId");
     const sessionId =
       requestedSessionId?.trim() || `wa_${randomUUID().replace(/-/g, "")}`;
+
+    await this.planLimits.assertCanCreateWhatsAppSession(normalizedUserId);
 
     const existing = await this.prisma.whatsAppSession.findUnique({
       where: {
@@ -91,8 +110,26 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     return this.startRuntime(sessionId);
   }
 
-  async readStatus(id: string): Promise<WhatsAppSessionStatusDto> {
-    const session = await this.findSessionById(id);
+  async listSessions(userId: string): Promise<WhatsAppSessionStatusDto[]> {
+    const normalizedUserId = this.normalizeRequiredString(userId, "userId");
+    const sessions = await this.prisma.whatsAppSession.findMany({
+      where: {
+        userId: normalizedUserId,
+        deletedAt: null,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+
+    return sessions.map((session) => this.toStatusDto(session));
+  }
+
+  async readStatus(
+    id: string,
+    userId?: string,
+  ): Promise<WhatsAppSessionStatusDto> {
+    const session = await this.findSessionById(id, userId);
 
     const status = this.toStatusDto(session);
     await this.cache.setSession(status);
@@ -100,14 +137,14 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     return status;
   }
 
-  async readQr(id: string): Promise<{
+  async readQr(id: string, userId?: string): Promise<{
     id: string;
     sessionId: string;
     status: WhatsAppSessionStatusDto["status"];
     qrCode?: string;
     qrCodeDataUrl?: string;
   }> {
-    const session = await this.findSessionById(id);
+    const session = await this.findSessionById(id, userId);
 
     return {
       id: session.id,
@@ -118,11 +155,11 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async getConnectedSocket(id: string): Promise<{
+  async getConnectedSocket(id: string, userId?: string): Promise<{
     session: WhatsAppSession;
     socket: WASocket;
   }> {
-    let session = await this.findSessionById(id);
+    let session = await this.findSessionById(id, userId);
 
     if (session.status !== "CONNECTED") {
       throw new BadRequestException(
@@ -134,7 +171,7 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
 
     if (!managed) {
       await this.startRuntime(session.sessionId);
-      session = await this.findSessionById(id);
+      session = await this.findSessionById(id, userId);
       managed = this.sessions.get(session.sessionId);
     }
 
@@ -144,17 +181,79 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
       );
     }
 
+    this.registerMessageListener(session.sessionId, managed.socket);
+
     return {
       session,
       socket: managed.socket,
     };
   }
 
-  async deleteSession(id: string): Promise<WhatsAppSessionStatusDto> {
-    const session = await this.findSessionById(id);
+  async readDebug(
+    id: string,
+    userId?: string,
+  ): Promise<WhatsAppSessionDebugDto> {
+    const session = await this.findSessionById(id, userId);
+    const managed = this.sessions.get(session.sessionId);
+    const [groupsCount, messagesCount, lastMessage, routesCount] =
+      await Promise.all([
+        this.prisma.whatsAppGroup.count({
+          where: { sessionId: session.sessionId },
+        }),
+        this.prisma.whatsAppMessage.count({
+          where: { sessionId: session.sessionId },
+        }),
+        this.prisma.whatsAppMessage.findFirst({
+          where: { sessionId: session.sessionId },
+          orderBy: { createdAt: "desc" },
+          select: { createdAt: true },
+        }),
+        this.prisma.messageRoute.count({
+          where: {
+            userId: session.userId,
+            sessionId: session.sessionId,
+          },
+        }),
+      ]);
+
+    return {
+      id: session.id,
+      sessionId: session.sessionId,
+      status: session.status,
+      hasSocket: Boolean(managed),
+      listenerRegistered: Boolean(managed?.listenerRegistered),
+      groupsCount,
+      messagesCount,
+      lastMessageAt: lastMessage?.createdAt ?? null,
+      routesCount,
+    };
+  }
+
+  async reconnectSession(
+    id: string,
+    userId?: string,
+  ): Promise<WhatsAppSessionStatusDto> {
+    const session = await this.findSessionById(id, userId);
     const managed = this.sessions.get(session.sessionId);
 
     if (managed) {
+      this.retiredSockets.add(managed.socket);
+      this.sessions.delete(session.sessionId);
+      managed.socket.end(undefined);
+    }
+
+    return this.startRuntime(session.sessionId);
+  }
+
+  async deleteSession(
+    id: string,
+    userId?: string,
+  ): Promise<WhatsAppSessionStatusDto> {
+    const session = await this.findSessionById(id, userId);
+    const managed = this.sessions.get(session.sessionId);
+
+    if (managed) {
+      this.retiredSockets.add(managed.socket);
       await managed.socket.logout().catch(() => undefined);
       managed.socket.end(undefined);
       this.sessions.delete(session.sessionId);
@@ -167,6 +266,7 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
         id: session.id,
       },
       data: {
+        deletedAt: new Date(),
         status: "DISCONNECTED",
         qrCode: null,
         qrCodeDataUrl: null,
@@ -178,13 +278,13 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
 
     const status = this.toStatusDto(updated);
     await this.cache.deleteSession(session.id);
-    await this.cache.setSession(status);
 
     return status;
   }
 
   async onModuleDestroy() {
     for (const session of this.sessions.values()) {
+      this.retiredSockets.add(session.socket);
       session.socket.end(undefined);
     }
 
@@ -203,6 +303,7 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     const existing = this.sessions.get(sessionId);
 
     if (existing) {
+      this.registerMessageListener(sessionId, existing.socket);
       return this.readStatusBySessionId(sessionId);
     }
 
@@ -219,9 +320,10 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
   private async bootSocket(
     sessionId: string,
   ): Promise<WhatsAppSessionStatusDto> {
+    const current = await this.findSessionBySessionId(sessionId);
     const session = await this.prisma.whatsAppSession.update({
       where: {
-        sessionId,
+        id: current.id,
       },
       data: {
         status: "CONNECTING",
@@ -240,18 +342,12 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
       version: DEFAULT_CONNECTION_CONFIG.version,
     });
 
-    this.sessions.set(session.sessionId, { socket });
-    socket.ev.on("creds.update", saveCreds);
-    socket.ev.on("messages.upsert", ({ messages }) => {
-      void Promise.all(
-        messages.map((message) =>
-          this.messagesService.recordIncomingGroupMessage(
-            session.sessionId,
-            message,
-          ),
-        ),
-      ).catch(() => undefined);
+    this.sessions.set(session.sessionId, {
+      socket,
+      listenerRegistered: false,
     });
+    socket.ev.on("creds.update", saveCreds);
+    this.registerMessageListener(session.sessionId, socket);
     socket.ev.on("connection.update", (update) => {
       void this.handleConnectionUpdate(session.sessionId, socket, update);
     });
@@ -264,7 +360,21 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     socket: WASocket,
     update: Partial<ConnectionState>,
   ): Promise<void> {
+    if (this.retiredSockets.has(socket)) {
+      return;
+    }
+
     const managed = this.sessions.get(sessionId);
+
+    if (managed && managed.socket !== socket) {
+      return;
+    }
+
+    if (await this.isSessionDeleted(sessionId)) {
+      socket.end(undefined);
+      this.sessions.delete(sessionId);
+      return;
+    }
 
     if (update.qr) {
       const qrCodeDataUrl = await QRCode.toDataURL(update.qr);
@@ -293,6 +403,13 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     }
 
     if (update.connection === "open") {
+      if (await this.isSessionDeleted(sessionId)) {
+        socket.end(undefined);
+        this.sessions.delete(sessionId);
+        return;
+      }
+
+      this.registerMessageListener(sessionId, socket);
       const session = await this.prisma.whatsAppSession.update({
         where: {
           sessionId,
@@ -316,6 +433,11 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
 
       this.sessions.delete(sessionId);
 
+      if (await this.isSessionDeleted(sessionId)) {
+        await this.authStore.clear(sessionId);
+        return;
+      }
+
       const session = await this.prisma.whatsAppSession.update({
         where: {
           sessionId,
@@ -336,6 +458,32 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
         await this.authStore.clear(sessionId);
       }
     }
+  }
+
+  private registerMessageListener(sessionId: string, socket: WASocket): void {
+    const managed = this.sessions.get(sessionId);
+
+    if (!managed || managed.socket !== socket || managed.listenerRegistered) {
+      return;
+    }
+
+    socket.ev.on("messages.upsert", ({ messages, type }) => {
+      console.log(
+        `[WA_MESSAGE] upsert sessionId=${sessionId} type=${type} count=${messages.length}`,
+      );
+
+      for (const message of messages) {
+        void this.messagesService
+          .recordIncomingGroupMessage(sessionId, message)
+          .catch((error: unknown) => {
+            console.log(
+              `[WA_MESSAGE] skipped reason=SAVE_FAILED_${this.readSafeErrorCode(error)}`,
+            );
+          });
+      }
+    });
+    managed.listenerRegistered = true;
+    console.log(`[WA_LISTENER] registered sessionId=${sessionId}`);
   }
 
   private async waitForQrOrConnection(
@@ -365,7 +513,7 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    if (!session) {
+    if (!session || session.deletedAt) {
       throw new NotFoundException("WhatsApp session not found.");
     }
 
@@ -375,11 +523,42 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     return status;
   }
 
-  private async findSessionById(id: string) {
+  private async findSessionById(id: string, userId?: string) {
     const normalizedId = this.normalizeRequiredString(id, "id");
-    const session = await this.prisma.whatsAppSession.findUnique({
+    const normalizedUserId = userId
+      ? this.normalizeRequiredString(userId, "userId")
+      : undefined;
+    const session = normalizedUserId
+      ? await this.prisma.whatsAppSession.findFirst({
+          where: {
+            id: normalizedId,
+            userId: normalizedUserId,
+            deletedAt: null,
+          },
+        })
+      : await this.prisma.whatsAppSession.findFirst({
+          where: {
+            id: normalizedId,
+            deletedAt: null,
+          },
+        });
+
+    if (!session) {
+      throw new NotFoundException("WhatsApp session not found.");
+    }
+
+    return session;
+  }
+
+  private async findSessionBySessionId(sessionId: string) {
+    const normalizedSessionId = this.normalizeRequiredString(
+      sessionId,
+      "sessionId",
+    );
+    const session = await this.prisma.whatsAppSession.findFirst({
       where: {
-        id: normalizedId,
+        sessionId: normalizedSessionId,
+        deletedAt: null,
       },
     });
 
@@ -388,6 +567,19 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     }
 
     return session;
+  }
+
+  private async isSessionDeleted(sessionId: string): Promise<boolean> {
+    const session = await this.prisma.whatsAppSession.findUnique({
+      where: {
+        sessionId,
+      },
+      select: {
+        deletedAt: true,
+      },
+    });
+
+    return !session || Boolean(session.deletedAt);
   }
 
   private toStatusDto(session: {
@@ -424,6 +616,21 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     }
 
     return undefined;
+  }
+
+  private readSafeErrorCode(error: unknown): string {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      typeof error.code === "string"
+    ) {
+      return error.code.replace(/[^A-Z0-9_]/gi, "_").toUpperCase();
+    }
+
+    return error instanceof Error
+      ? error.name.replace(/[^A-Z0-9_]/gi, "_").toUpperCase()
+      : "UNKNOWN";
   }
 
   private normalizeRequiredString(value: string, fieldName: string): string {

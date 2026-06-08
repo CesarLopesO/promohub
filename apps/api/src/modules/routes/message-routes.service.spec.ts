@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { BadRequestException, ConflictException } from "@nestjs/common";
 import type { MessageRoute } from "@prisma/client";
 
 import { Marketplace } from "../affiliate/helpers/detect-marketplace";
@@ -55,6 +56,7 @@ function makeService(options?: {
   messages?: StoredMessage[];
   forwarded?: StoredForwarded[];
   rewrittenText?: string;
+  rewriteMode?: "real" | "legacy" | "disabled";
   sessionStatus?: string;
   sendMessageError?: Error;
 }) {
@@ -67,6 +69,16 @@ function makeService(options?: {
   }> = [];
   const prisma = {
     messageRoute: {
+      create: async ({
+        data,
+      }: {
+        data: Omit<MessageRoute, "id" | "createdAt" | "updatedAt">;
+      }) => {
+        const route = makeRoute({ ...data, id: `route-${routes.length + 1}` });
+        routes.push(route);
+
+        return route;
+      },
       upsert: async ({
         create,
         update,
@@ -101,6 +113,18 @@ function makeService(options?: {
         ),
       findUnique: async ({ where }: { where: { id: string } }) =>
         routes.find((route) => route.id === where.id) ?? null,
+      findFirst: async ({
+        where,
+      }: {
+        where: Partial<MessageRoute>;
+      }) =>
+        routes.find((route) =>
+          Object.entries(where).every(
+            ([key, value]) =>
+              value === undefined ||
+              route[key as keyof MessageRoute] === value,
+          ),
+        ) ?? null,
       update: async ({
         where,
         data,
@@ -121,6 +145,11 @@ function makeService(options?: {
         messages.find((message) => message.id === where.id) ?? null,
     },
     whatsAppSession: {
+      findFirst: async ({ where }: { where: { sessionId: string } }) => ({
+        id: "session-record-id",
+        sessionId: where.sessionId,
+        status: options?.sessionStatus ?? "CONNECTED",
+      }),
       findUnique: async ({ where }: { where: { sessionId: string } }) => ({
         id: "session-record-id",
         sessionId: where.sessionId,
@@ -175,6 +204,7 @@ function makeService(options?: {
             rewrittenUrl: "https://amzn.to/abc?tag=meutag-20",
             marketplace: Marketplace.AMAZON,
             changed: Boolean(options?.rewrittenText),
+            ...(options?.rewriteMode ? { mode: options.rewriteMode } : {}),
           },
         ],
       };
@@ -198,12 +228,16 @@ function makeService(options?: {
     linkRewriter as never,
     sessionManager as never,
   );
+  const planLimits = {
+    assertCanCreateRoute: async () => undefined,
+  };
 
   return {
     service: new MessageRoutesService(
       prisma as never,
       linkRewriter as never,
       forwardingService,
+      planLimits as never,
     ),
     forwardingService,
     forwarded,
@@ -224,6 +258,78 @@ describe("MessageRoutesService", () => {
 
     assert.equal(route.isActive, true);
     assert.equal(route.destinationGroupJid, "destination@g.us");
+  });
+
+  it("blocks an exact active duplicate route", async () => {
+    const { service } = makeService({ routes: [makeRoute()] });
+
+    await assert.rejects(
+      () =>
+        service.create({
+          userId: "test-user",
+          sessionId: "wa_xxx",
+          sourceGroupJid: "source@g.us",
+          destinationGroupJid: "destination@g.us",
+        }),
+      ConflictException,
+    );
+  });
+
+  it("allows same groups in another session", async () => {
+    const { service } = makeService({ routes: [makeRoute()] });
+
+    const route = await service.create({
+      userId: "test-user",
+      sessionId: "wa_other",
+      sourceGroupJid: "source@g.us",
+      destinationGroupJid: "destination@g.us",
+    });
+
+    assert.equal(route.sessionId, "wa_other");
+  });
+
+  it("allows same groups for another user", async () => {
+    const { service } = makeService({ routes: [makeRoute()] });
+
+    const route = await service.create({
+      userId: "other-user",
+      sessionId: "wa_xxx",
+      sourceGroupJid: "source@g.us",
+      destinationGroupJid: "destination@g.us",
+    });
+
+    assert.equal(route.userId, "other-user");
+  });
+
+  it("reactivates an inactive exact route", async () => {
+    const { service } = makeService({
+      routes: [makeRoute({ isActive: false })],
+    });
+
+    const route = await service.create({
+      userId: "test-user",
+      sessionId: "wa_xxx",
+      sourceGroupJid: "source@g.us",
+      destinationGroupJid: "destination@g.us",
+    });
+
+    assert.equal(route.id, "route-id");
+    assert.equal(route.isActive, true);
+  });
+
+  it("blocks source and destination with the same group", async () => {
+    const { service } = makeService();
+
+    await assert.rejects(
+      () =>
+        service.create({
+          userId: "test-user",
+          sessionId: "wa_xxx",
+          sourceGroupJid: "same@g.us",
+          destinationGroupJid: "same@g.us",
+        }),
+      BadRequestException,
+    );
   });
 
   it("lists routes", async () => {
@@ -451,7 +557,7 @@ describe("MessageRoutesService", () => {
           },
         },
       ],
-      rewrittenText: "https://meli.la/abc?aff_id=ml-aff-123",
+      rewrittenText: "https://meli.la/affiliate-real",
     });
     (
       forwardingService as unknown as {
@@ -474,7 +580,7 @@ describe("MessageRoutesService", () => {
       jid: "destination@g.us",
       content: {
         image: Buffer.from("image"),
-        caption: "https://meli.la/abc?aff_id=ml-aff-123",
+        caption: "https://meli.la/affiliate-real",
       },
     });
   });
@@ -505,7 +611,7 @@ describe("MessageRoutesService", () => {
           },
         },
       ],
-      rewrittenText: "https://meli.la/abc?aff_id=ml-aff-123",
+      rewrittenText: "https://meli.la/affiliate-real",
     });
     (
       forwardingService as unknown as {
@@ -531,7 +637,7 @@ describe("MessageRoutesService", () => {
     });
     assert.equal(
       (sentMessages[0]?.content as { caption?: string }).caption,
-      "https://meli.la/abc?aff_id=ml-aff-123",
+      "https://meli.la/affiliate-real",
     );
   });
 
@@ -556,7 +662,7 @@ describe("MessageRoutesService", () => {
           },
         },
       ],
-      rewrittenText: "https://meli.la/abc?aff_id=ml-aff-123",
+      rewrittenText: "https://meli.la/affiliate-real",
     });
     (
       forwardingService as unknown as {
@@ -578,7 +684,7 @@ describe("MessageRoutesService", () => {
     assert.deepEqual(sentMessages[0], {
       jid: "destination@g.us",
       content: {
-        text: "https://meli.la/abc?aff_id=ml-aff-123",
+        text: "https://meli.la/affiliate-real",
       },
     });
   });
@@ -604,6 +710,69 @@ describe("MessageRoutesService", () => {
 
     assert.equal(response.sentCount, 0);
     assert.deepEqual(sentMessages, []);
+  });
+
+  it("auto forward blocks legacy Mercado Livre rewrites by default", async () => {
+    delete process.env.MERCADO_LIVRE_LEGACY_FORWARD_ENABLED;
+    const { forwardingService, sentMessages } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "https://meli.la/abc",
+          links: ["https://meli.la/abc"],
+        },
+      ],
+      rewrittenText: "https://meli.la/abc?aff_id=ml-aff",
+      rewriteMode: "legacy",
+    });
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+      { mode: "auto" },
+    );
+
+    assert.equal(response.sentCount, 0);
+    assert.deepEqual(sentMessages, []);
+  });
+
+  it("auto forward allows legacy rewrites only when explicitly enabled", async () => {
+    process.env.MERCADO_LIVRE_LEGACY_FORWARD_ENABLED = "true";
+    const { forwardingService, sentMessages } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "https://meli.la/abc",
+          links: ["https://meli.la/abc"],
+        },
+      ],
+      rewrittenText: "https://meli.la/abc?aff_id=ml-aff",
+      rewriteMode: "legacy",
+    });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+      }
+    ).waitRandomDelay = async () => undefined;
+
+    try {
+      const response = await forwardingService.forwardMessageById(
+        "test-user",
+        "message-id",
+        { mode: "auto" },
+      );
+
+      assert.equal(response.sentCount, 1);
+      assert.equal(sentMessages.length, 1);
+    } finally {
+      delete process.env.MERCADO_LIVRE_LEGACY_FORWARD_ENABLED;
+    }
   });
 
   it("rejects forward when the session is not connected", async () => {

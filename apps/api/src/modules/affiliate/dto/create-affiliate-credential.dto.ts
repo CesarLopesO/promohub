@@ -1,5 +1,4 @@
 export class CreateAffiliateCredentialDto {
-  userId!: string;
   marketplace!: string;
   affiliateId?: string;
   apiKey?: string;

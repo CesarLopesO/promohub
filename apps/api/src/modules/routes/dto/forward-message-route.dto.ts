@@ -1,3 +1,1 @@
-export class ForwardMessageRouteDto {
-  userId!: string;
-}
+export class ForwardMessageRouteDto {}

@@ -14,6 +14,56 @@ enum WhatsAppConnectionStatus {
   CONNECTED
 }
 
+enum Plan {
+  FREE
+  BASIC
+  PRO
+}
+
+enum SubscriptionStatus {
+  NONE
+  PENDING
+  ACTIVE
+  PAST_DUE
+  OVERDUE
+  CANCELED
+}
+
+model User {
+  id                 String             @id @default(cuid())
+  email              String             @unique
+  passwordHash       String
+  name               String?
+  role               String             @default("USER")
+  plan               Plan               @default(FREE)
+  subscriptionStatus SubscriptionStatus @default(NONE)
+  isActive           Boolean            @default(true)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  subscriptions      Subscription[]
+}
+
+model Subscription {
+  id                     String             @id @default(cuid())
+  userId                 String
+  plan                   Plan
+  status                 SubscriptionStatus @default(PENDING)
+  provider               String?
+  providerSubscriptionId String?
+  checkoutUrl            String?
+  currentPeriodStart     DateTime?
+  currentPeriodEnd       DateTime?
+  canceledAt             DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  user                   User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([plan])
+  @@index([providerSubscriptionId])
+}
+
 model WhatsAppSession {
   id             String                   @id @default(cuid())
   userId         String
@@ -25,6 +75,7 @@ model WhatsAppSession {
   connectedAt    DateTime?
   disconnectedAt DateTime?
   lastQrAt       DateTime?
+  deletedAt      DateTime?
   createdAt      DateTime                 @default(now())
   updatedAt      DateTime                 @updatedAt
   authStates     WhatsAppAuthState[]
@@ -32,7 +83,9 @@ model WhatsAppSession {
   messages       WhatsAppMessage[]
 
   @@index([userId])
+  @@index([userId, deletedAt])
   @@index([status])
+  @@index([deletedAt])
 }
 
 model WhatsAppAuthState {
@@ -104,6 +157,21 @@ model AffiliateCredential {
   @@index([marketplace])
 }
 
+model AffiliateGeneratorConfig {
+  id           String   @id @default(cuid())
+  marketplace  String   @unique
+  method       String
+  url          String
+  headers      Json?
+  bodyTemplate Json?
+  responsePath String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([isActive])
+}
+
 model MessageRoute {
   id                  String   @id @default(cuid())
   userId              String
@@ -114,7 +182,7 @@ model MessageRoute {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
-  @@unique([sessionId, sourceGroupJid, destinationGroupJid])
+  @@unique([userId, sessionId, sourceGroupJid, destinationGroupJid])
   @@index([userId])
   @@index([sessionId])
   @@index([sourceGroupJid])

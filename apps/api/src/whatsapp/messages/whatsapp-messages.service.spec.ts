@@ -261,4 +261,101 @@ describe("WhatsAppMessagesService", () => {
 
     assert.deepEqual(autoForwardCalls, []);
   });
+
+  it("skips fromMe, private, reaction, and protocol messages", async () => {
+    let createCount = 0;
+    const service = new WhatsAppMessagesService(
+      {
+        whatsAppMessage: {
+          create: async () => {
+            createCount += 1;
+          },
+        },
+      } as never,
+      makeModuleRef([]) as never,
+    );
+    const messages = [
+      {
+        key: {
+          remoteJid: "120363000000000000@g.us",
+          id: "from-me",
+          fromMe: true,
+        },
+        message: { conversation: "ignored" },
+      },
+      {
+        key: {
+          remoteJid: "5511999999999@s.whatsapp.net",
+          id: "private",
+          fromMe: false,
+        },
+        message: { conversation: "ignored" },
+      },
+      {
+        key: {
+          remoteJid: "120363000000000000@g.us",
+          id: "reaction",
+          fromMe: false,
+        },
+        message: { reactionMessage: { text: "👍" } },
+      },
+      {
+        key: {
+          remoteJid: "120363000000000000@g.us",
+          id: "protocol",
+          fromMe: false,
+        },
+        message: { protocolMessage: { type: 0 } },
+      },
+    ] as WAMessage[];
+
+    for (const message of messages) {
+      await service.recordIncomingGroupMessage("wa_current", message);
+    }
+
+    assert.equal(createCount, 0);
+  });
+
+  it("persists the public wa sessionId for ephemeral text messages", async () => {
+    let storedSessionId = "";
+    const service = new WhatsAppMessagesService(
+      {
+        whatsAppMessage: {
+          create: async ({ data }: { data: { sessionId: string } }) => {
+            storedSessionId = data.sessionId;
+            return {
+              id: "saved-message-id",
+              sessionId: data.sessionId,
+              groupJid: "120363000000000000@g.us",
+              session: { userId: "test-user" },
+            };
+          },
+        },
+      } as never,
+      makeModuleRef([]) as never,
+    );
+
+    await service.recordIncomingGroupMessage(
+      "wa_5032495467bb4aa09dce5c851d78672a",
+      {
+        key: {
+          remoteJid: "120363000000000000@g.us",
+          id: "ephemeral-message",
+          fromMe: false,
+        },
+        message: {
+          ephemeralMessage: {
+            message: {
+              extendedTextMessage: { text: "Mensagem nova" },
+            },
+          },
+        },
+      } as WAMessage,
+    );
+
+    assert.equal(
+      storedSessionId,
+      "wa_5032495467bb4aa09dce5c851d78672a",
+    );
+  });
 });

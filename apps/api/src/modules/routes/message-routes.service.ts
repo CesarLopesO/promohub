@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
@@ -12,6 +13,7 @@ import {
   AffiliateLinkRewriterService,
   AffiliateRewriteResult,
 } from "../affiliate/affiliate-link-rewriter.service";
+import { PlanLimitsService } from "../plans/plan-limits.service";
 import { PrismaService } from "../../prisma.service";
 import type { CreateMessageRouteDto } from "./dto/create-message-route.dto";
 import type { ForwardMessageRouteDto } from "./dto/forward-message-route.dto";
@@ -67,9 +69,12 @@ export class MessageRoutesService {
     private readonly prisma: PrismaService,
     private readonly linkRewriter: AffiliateLinkRewriterService,
     private readonly forwardingService: MessageForwardingService,
+    private readonly planLimits: PlanLimitsService,
   ) {}
 
-  async create(body: CreateMessageRouteDto): Promise<MessageRouteDto> {
+  async create(
+    body: CreateMessageRouteDto & { userId: string },
+  ): Promise<MessageRouteDto> {
     const data = {
       userId: this.normalizeRequiredString(body.userId, "userId"),
       sessionId: this.normalizeRequiredString(body.sessionId, "sessionId"),
@@ -82,25 +87,70 @@ export class MessageRoutesService {
         "destinationGroupJid",
       ),
     };
-    const route = await this.prisma.messageRoute.upsert({
+
+    if (data.sourceGroupJid === data.destinationGroupJid) {
+      throw new BadRequestException(
+        "O grupo de origem e destino não podem ser iguais.",
+      );
+    }
+
+    const existingRoute = await this.prisma.messageRoute.findFirst({
       where: {
-        sessionId_sourceGroupJid_destinationGroupJid: {
-          sessionId: data.sessionId,
-          sourceGroupJid: data.sourceGroupJid,
-          destinationGroupJid: data.destinationGroupJid,
-        },
-      },
-      create: {
-        ...data,
-        isActive: true,
-      },
-      update: {
         userId: data.userId,
+        sessionId: data.sessionId,
+        sourceGroupJid: data.sourceGroupJid,
+        destinationGroupJid: data.destinationGroupJid,
+      },
+      select: {
+        id: true,
         isActive: true,
       },
     });
 
-    return this.toDto(route);
+    if (existingRoute?.isActive) {
+      throw new ConflictException("Esta rota já existe.");
+    }
+
+    if (existingRoute) {
+      await this.planLimits.assertCanCreateRoute(
+        data.userId,
+        data.sourceGroupJid,
+        data.destinationGroupJid,
+      );
+      const reactivated = await this.prisma.messageRoute.update({
+        where: {
+          id: existingRoute.id,
+        },
+        data: {
+          isActive: true,
+        },
+      });
+
+      return this.toDto(reactivated);
+    }
+
+    await this.planLimits.assertCanCreateRoute(
+      data.userId,
+      data.sourceGroupJid,
+      data.destinationGroupJid,
+    );
+
+    try {
+      const route = await this.prisma.messageRoute.create({
+        data: {
+          ...data,
+          isActive: true,
+        },
+      });
+
+      return this.toDto(route);
+    } catch (err) {
+      if (this.isPrismaUniqueConstraint(err)) {
+        throw new ConflictException("Esta rota já existe.");
+      }
+
+      throw err;
+    }
   }
 
   async list(filters: {
@@ -123,56 +173,90 @@ export class MessageRoutesService {
     return routes.map((route) => this.toDto(route));
   }
 
-  async findOne(id: string): Promise<MessageRouteDto> {
-    return this.toDto(await this.findRoute(id));
+  async findOne(id: string, userId?: string): Promise<MessageRouteDto> {
+    return this.toDto(await this.findRoute(id, userId));
   }
 
   async update(
     id: string,
     body: UpdateMessageRouteDto,
+    userId?: string,
   ): Promise<MessageRouteDto> {
-    const route = await this.findRoute(id);
-    const updated = await this.prisma.messageRoute.update({
-      where: {
-        id: route.id,
-      },
-      data: {
-        ...(body.userId === undefined
-          ? {}
-          : { userId: this.normalizeRequiredString(body.userId, "userId") }),
-        ...(body.sessionId === undefined
-          ? {}
-          : {
-              sessionId: this.normalizeRequiredString(
-                body.sessionId,
-                "sessionId",
-              ),
-            }),
-        ...(body.sourceGroupJid === undefined
-          ? {}
-          : {
-              sourceGroupJid: this.normalizeRequiredString(
-                body.sourceGroupJid,
-                "sourceGroupJid",
-              ),
-            }),
-        ...(body.destinationGroupJid === undefined
-          ? {}
-          : {
-              destinationGroupJid: this.normalizeRequiredString(
-                body.destinationGroupJid,
-                "destinationGroupJid",
-              ),
-            }),
-        ...(body.isActive === undefined ? {} : { isActive: body.isActive }),
-      },
-    });
+    const route = await this.findRoute(id, userId);
+    const data = {
+      sessionId:
+        body.sessionId === undefined
+          ? route.sessionId
+          : this.normalizeRequiredString(body.sessionId, "sessionId"),
+      sourceGroupJid:
+        body.sourceGroupJid === undefined
+          ? route.sourceGroupJid
+          : this.normalizeRequiredString(body.sourceGroupJid, "sourceGroupJid"),
+      destinationGroupJid:
+        body.destinationGroupJid === undefined
+          ? route.destinationGroupJid
+          : this.normalizeRequiredString(
+              body.destinationGroupJid,
+              "destinationGroupJid",
+            ),
+      isActive: body.isActive === undefined ? route.isActive : body.isActive,
+    };
+
+    if (data.sourceGroupJid === data.destinationGroupJid) {
+      throw new BadRequestException(
+        "O grupo de origem e destino não podem ser iguais.",
+      );
+    }
+
+    if (data.isActive) {
+      const duplicate = await this.prisma.messageRoute.findFirst({
+        where: {
+          userId: route.userId,
+          sessionId: data.sessionId,
+          sourceGroupJid: data.sourceGroupJid,
+          destinationGroupJid: data.destinationGroupJid,
+          isActive: true,
+          NOT: {
+            id: route.id,
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (duplicate) {
+        throw new ConflictException("Esta rota já existe.");
+      }
+    }
+
+    let updated: MessageRoute;
+
+    try {
+      updated = await this.prisma.messageRoute.update({
+        where: {
+          id: route.id,
+        },
+        data: {
+          sessionId: data.sessionId,
+          sourceGroupJid: data.sourceGroupJid,
+          destinationGroupJid: data.destinationGroupJid,
+          isActive: data.isActive,
+        },
+      });
+    } catch (err) {
+      if (this.isPrismaUniqueConstraint(err)) {
+        throw new ConflictException("Esta rota já existe.");
+      }
+
+      throw err;
+    }
 
     return this.toDto(updated);
   }
 
-  async softDelete(id: string): Promise<MessageRouteDto> {
-    const route = await this.findRoute(id);
+  async softDelete(id: string, userId?: string): Promise<MessageRouteDto> {
+    const route = await this.findRoute(id, userId);
     const updated = await this.prisma.messageRoute.update({
       where: {
         id: route.id,
@@ -185,7 +269,9 @@ export class MessageRoutesService {
     return this.toDto(updated);
   }
 
-  async preview(body: PreviewMessageRouteDto): Promise<MessageRoutePreviewDto> {
+  async preview(
+    body: PreviewMessageRouteDto & { userId: string },
+  ): Promise<MessageRoutePreviewDto> {
     const userId = this.normalizeRequiredString(body.userId, "userId");
     const messageId = this.normalizeRequiredString(body.messageId, "messageId");
     const message = await this.prisma.whatsAppMessage.findUnique({
@@ -228,11 +314,18 @@ export class MessageRoutesService {
 
   async forward(
     messageId: string,
-    body: ForwardMessageRouteDto,
+    bodyOrUserId: (ForwardMessageRouteDto & { userId?: string }) | string,
   ): Promise<ForwardMessageResponseDto> {
-    return this.forwardingService.forwardMessageById(body.userId, messageId, {
-      mode: "manual",
-    });
+    const userId =
+      typeof bodyOrUserId === "string" ? bodyOrUserId : bodyOrUserId.userId;
+
+    return this.forwardingService.forwardMessageById(
+      this.normalizeRequiredString(userId ?? "", "userId"),
+      messageId,
+      {
+        mode: "manual",
+      },
+    );
   }
 
   async listForwarded(filters: {
@@ -251,13 +344,23 @@ export class MessageRoutesService {
     return forwardedMessages.map((message) => this.toForwardedDto(message));
   }
 
-  private async findRoute(id: string): Promise<MessageRoute> {
+  private async findRoute(id: string, userId?: string): Promise<MessageRoute> {
     const normalizedId = this.normalizeRequiredString(id, "id");
-    const route = await this.prisma.messageRoute.findUnique({
-      where: {
-        id: normalizedId,
-      },
-    });
+    const normalizedUserId = userId
+      ? this.normalizeRequiredString(userId, "userId")
+      : undefined;
+    const route = normalizedUserId
+      ? await this.prisma.messageRoute.findFirst({
+          where: {
+            id: normalizedId,
+            userId: normalizedUserId,
+          },
+        })
+      : await this.prisma.messageRoute.findUnique({
+          where: {
+            id: normalizedId,
+          },
+        });
 
     if (!route) {
       throw new NotFoundException("Message route not found.");
@@ -306,5 +409,14 @@ export class MessageRoutesService {
     }
 
     return value.trim();
+  }
+
+  private isPrismaUniqueConstraint(error: unknown): boolean {
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "P2002"
+    );
   }
 }

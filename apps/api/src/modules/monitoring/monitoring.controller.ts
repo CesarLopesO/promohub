@@ -1,5 +1,7 @@
-import { Controller, Get, Query } from "@nestjs/common";
+import { Controller, Get, Req, UseGuards } from "@nestjs/common";
 
+import type { AuthenticatedRequest } from "../auth/auth.types";
+import { JwtAuthGuard } from "../auth/jwt.guard";
 import { MonitoringService } from "./monitoring.service";
 
 @Controller("monitoring")
@@ -11,18 +13,21 @@ export class MonitoringController {
     return this.monitoringService.health();
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get("stats")
-  stats(@Query("userId") userId?: string) {
-    return this.monitoringService.stats(userId);
+  stats(@Req() req: AuthenticatedRequest) {
+    return this.monitoringService.stats(req.user.id);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get("forward-errors")
-  forwardErrors(@Query("userId") userId?: string) {
-    return this.monitoringService.forwardErrors(userId);
+  forwardErrors(@Req() req: AuthenticatedRequest) {
+    return this.monitoringService.forwardErrors(req.user.id);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get("recent-activity")
-  recentActivity(@Query("userId") userId?: string) {
-    return this.monitoringService.recentActivity(userId);
+  recentActivity(@Req() req: AuthenticatedRequest) {
+    return this.monitoringService.recentActivity(req.user.id);
   }
 }

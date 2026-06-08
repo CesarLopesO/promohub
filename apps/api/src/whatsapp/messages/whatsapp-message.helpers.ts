@@ -94,6 +94,10 @@ export function isReactionMessage(message: WAMessage): boolean {
   return Boolean(getNormalizedContent(message)?.reactionMessage);
 }
 
+export function isProtocolMessage(message: WAMessage): boolean {
+  return Boolean(getNormalizedContent(message)?.protocolMessage);
+}
+
 function getNormalizedContent(message: WAMessage): WAMessageContent | undefined {
   return normalizeMessageContent(message.message);
 }

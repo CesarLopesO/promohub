@@ -1,13 +1,15 @@
 import { Module } from "@nestjs/common";
 
 import { AffiliateModule } from "../affiliate/affiliate.module";
+import { AuthModule } from "../auth/auth.module";
+import { PlansModule } from "../plans/plans.module";
 import { PrismaService } from "../../prisma.service";
 import { WhatsAppSessionModule } from "../../whatsapp/whatsapp-session.module";
 import { MessageRoutesController } from "./message-routes.controller";
 import { MessageRoutesService } from "./message-routes.service";
 
 @Module({
-  imports: [AffiliateModule, WhatsAppSessionModule],
+  imports: [AffiliateModule, AuthModule, PlansModule, WhatsAppSessionModule],
   controllers: [MessageRoutesController],
   providers: [PrismaService, MessageRoutesService],
   exports: [MessageRoutesService],

@@ -87,6 +87,7 @@ export class MonitoringService {
     const [connectedSessions, activeRoutes, lastForward] = await Promise.all([
       this.prisma.whatsAppSession.count({
         where: {
+          deletedAt: null,
           status: "CONNECTED",
         },
       }),
@@ -122,7 +123,9 @@ export class MonitoringService {
 
   async stats(userId?: string): Promise<MonitoringStatsDto> {
     const normalizedUserId = this.normalizeOptionalString(userId);
-    const sessionWhere = normalizedUserId ? { userId: normalizedUserId } : {};
+    const sessionWhere = normalizedUserId
+      ? { userId: normalizedUserId, deletedAt: null }
+      : { deletedAt: null };
     const sessionIds = await this.findSessionIds(normalizedUserId);
     const bySessionId = this.bySessionId(sessionIds);
     const byUserId = normalizedUserId ? { userId: normalizedUserId } : {};
@@ -388,6 +391,7 @@ export class MonitoringService {
     const sessions = await this.prisma.whatsAppSession.findMany({
       where: {
         userId,
+        deletedAt: null,
       },
       select: {
         sessionId: true,

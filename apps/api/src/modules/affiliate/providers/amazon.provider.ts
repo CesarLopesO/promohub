@@ -7,11 +7,16 @@ export class AmazonAffiliateProvider implements AffiliateProvider {
   async rewriteLink(
     originalUrl: string,
     credential: AffiliateCredential,
-  ): Promise<string> {
-    return addQueryParam(
+  ) {
+    const rewrittenUrl = addQueryParam(
       originalUrl,
       "tag",
       credential.trackingId ?? credential.affiliateId,
     );
+
+    return {
+      rewrittenUrl,
+      changed: rewrittenUrl !== originalUrl,
+    };
   }
 }

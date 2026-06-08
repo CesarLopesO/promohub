@@ -13,10 +13,10 @@ describe("replaceLinksInText", () => {
         },
         {
           originalUrl: "https://meli.la/xyz",
-          rewrittenUrl: "https://meli.la/xyz?aff_id=ml-aff",
+          rewrittenUrl: "https://meli.la/affiliate-real",
         },
       ]),
-      "Oferta https://amzn.to/abc?tag=meutag-20 e https://meli.la/xyz?aff_id=ml-aff",
+      "Oferta https://amzn.to/abc?tag=meutag-20 e https://meli.la/affiliate-real",
     );
   });
 
