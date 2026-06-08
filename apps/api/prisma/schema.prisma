@@ -172,6 +172,23 @@ model AffiliateGeneratorConfig {
   @@index([isActive])
 }
 
+model AffiliateLinkCache {
+  id              String    @id @default(cuid())
+  marketplace     String
+  originalUrl     String    @db.Text
+  resolvedUrl     String?   @db.Text
+  originalUrlHash String    @unique
+  affiliateUrl    String    @db.Text
+  itemId          String?
+  source          String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  expiresAt       DateTime?
+
+  @@index([marketplace])
+  @@index([expiresAt])
+}
+
 model MessageRoute {
   id                  String   @id @default(cuid())
   userId              String
@@ -202,6 +219,8 @@ model ForwardedMessage {
   mode                String?
   sentMessageType     String?
   mediaForwarded      Boolean   @default(false)
+  sentProviderMessageId String?
+  sentProviderRaw       Json?
   error               String?   @db.Text
   sentAt              DateTime?
   createdAt           DateTime  @default(now())

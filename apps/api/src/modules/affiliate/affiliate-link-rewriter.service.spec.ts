@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { NotFoundException } from "@nestjs/common";
-import type { AffiliateCredential } from "@prisma/client";
+import type { AffiliateCredential, AffiliateLinkCache } from "@prisma/client";
 import axios from "axios";
 
 import { AffiliateLinkRewriterService } from "./affiliate-link-rewriter.service";
@@ -53,6 +53,23 @@ function makeMessage(overrides: Partial<StoredMessage>): StoredMessage {
 function makeService(
   credentials: AffiliateCredential[],
   messages: StoredMessage[] = [],
+  mercadoLivreRewrite?: (originalUrl: string) => {
+    rewrittenUrl: string;
+    changed: boolean;
+    resolvedUrl?: string;
+    originalItemId?: string;
+    generatedItemId?: string;
+    sameProduct?: boolean;
+    canForward?: boolean;
+    reason?: string;
+    itemId?: string;
+    selectedCandidate?: {
+      source: "cta";
+      url: string;
+      score: number;
+    };
+  },
+  cacheEntries: AffiliateLinkCache[] = [],
 ) {
   return new AffiliateLinkRewriterService(
     {
@@ -77,13 +94,58 @@ function makeService(
         findUnique: async ({ where }: { where: { id: string } }) =>
           messages.find((message) => message.id === where.id) ?? null,
       },
+      affiliateLinkCache: {
+        findUnique: async ({
+          where,
+        }: {
+          where: { originalUrlHash: string };
+        }) =>
+          cacheEntries.find(
+            (entry) => entry.originalUrlHash === where.originalUrlHash,
+          ) ?? null,
+        upsert: async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { originalUrlHash: string };
+          create: Omit<
+            AffiliateLinkCache,
+            "id" | "createdAt" | "updatedAt"
+          >;
+          update: Partial<AffiliateLinkCache>;
+        }) => {
+          const existing = cacheEntries.find(
+            (entry) => entry.originalUrlHash === where.originalUrlHash,
+          );
+
+          if (existing) {
+            Object.assign(existing, update, { updatedAt: new Date() });
+            return existing;
+          }
+
+          const entry: AffiliateLinkCache = {
+            id: `cache-${cacheEntries.length + 1}`,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            ...create,
+          };
+          cacheEntries.push(entry);
+          return entry;
+        },
+      },
     } as never,
     {
-      rewriteLink: async (originalUrl: string) => ({
-        rewrittenUrl: `https://affiliate.mercadolivre.com/link?source=${encodeURIComponent(originalUrl)}`,
-        changed: true,
-        resolvedUrl: originalUrl,
-      }),
+      rewriteLink: async (originalUrl: string) =>
+        mercadoLivreRewrite?.(originalUrl) ?? {
+          rewrittenUrl: "https://meli.la/generated-affiliate",
+          changed: true,
+          resolvedUrl: originalUrl,
+          originalItemId: "MLB123456789",
+          generatedItemId: "MLB123456789",
+          sameProduct: true,
+          canForward: true,
+        },
     } as never,
   );
 }
@@ -128,9 +190,57 @@ describe("AffiliateLinkRewriterService", () => {
       "https://meli.la/xyz",
     );
 
-    assert.match(result.rewrittenUrl, /^https:\/\/affiliate\.mercadolivre\.com/);
+    assert.match(result.rewrittenUrl, /^https:\/\/meli\.la\//);
     assert.equal(result.changed, true);
     assert.equal(result.affiliateUrl, result.rewrittenUrl);
+  });
+
+  it("saves a successful Mercado Livre conversion and reuses it", async () => {
+    const cacheEntries: AffiliateLinkCache[] = [];
+    let providerCalls = 0;
+    const service = makeService(
+      [
+        makeCredential(Marketplace.MERCADO_LIVRE, {
+          affiliateId: "ml-aff",
+        }),
+      ],
+      [],
+      () => {
+        providerCalls += 1;
+        return {
+          rewrittenUrl: "https://meli.la/cached-affiliate",
+          changed: true,
+          resolvedUrl:
+            "https://produto.mercadolivre.com.br/MLB-123456789-produto-_JM",
+          itemId: "MLB123456789",
+          canForward: true,
+          selectedCandidate: {
+            source: "cta",
+            url: "https://produto.mercadolivre.com.br/MLB-123456789-produto-_JM",
+            score: 100,
+          },
+        };
+      },
+      cacheEntries,
+    );
+
+    const first = await service.rewriteUrlForUser(
+      "test-user",
+      "https://meli.la/repeated",
+    );
+    const second = await service.rewriteUrlForUser(
+      "test-user",
+      "https://meli.la/repeated",
+    );
+
+    assert.equal(first.cacheHit, undefined);
+    assert.equal(cacheEntries.length, 1);
+    assert.equal(cacheEntries[0]?.affiliateUrl, "https://meli.la/cached-affiliate");
+    assert.equal(cacheEntries[0]?.source, "cta");
+    assert.equal(second.cacheHit, true);
+    assert.equal(second.reason, "CACHE_HIT");
+    assert.equal(second.affiliateUrl, "https://meli.la/cached-affiliate");
+    assert.equal(providerCalls, 1);
   });
 
   it("rewrites Shopee links with affiliateId", async () => {
@@ -204,7 +314,7 @@ describe("AffiliateLinkRewriterService", () => {
       result.map((item) => item.rewrittenUrl),
       [
         "https://amzn.to/abc?tag=meutag-20",
-        "https://affiliate.mercadolivre.com/link?source=https%3A%2F%2Fmeli.la%2Fxyz",
+        "https://meli.la/generated-affiliate",
       ],
     );
   });
@@ -220,6 +330,7 @@ describe("AffiliateLinkRewriterService", () => {
       {
         messageId: "message-id",
         changed: true,
+        canForward: true,
         originalText: "Loja oficial Amazon: https://amzn.to/abc",
         rewrittenText:
           "Loja oficial Amazon: https://amzn.to/abc?tag=meutag-20",
@@ -257,7 +368,7 @@ describe("AffiliateLinkRewriterService", () => {
 
     assert.equal(
       result.rewrittenText,
-      "Promo ML https://affiliate.mercadolivre.com/link?source=https%3A%2F%2Fmeli.la%2Fabc",
+      "Promo ML https://meli.la/generated-affiliate",
     );
   });
 
@@ -282,10 +393,60 @@ describe("AffiliateLinkRewriterService", () => {
 
     assert.equal(
       result.rewrittenText,
-      "Ofertas https://amzn.to/abc?tag=meutag-20 e https://affiliate.mercadolivre.com/link?source=https%3A%2F%2Fmeli.la%2Fxyz",
+      "Ofertas https://amzn.to/abc?tag=meutag-20 e https://meli.la/generated-affiliate",
     );
     assert.equal(result.changed, true);
     assert.equal(result.rewrites.length, 2);
+    assert.equal(result.canForward, true);
+  });
+
+  it("blocks forwarding when any Mercado Livre link fails conversion", async () => {
+    const service = makeService(
+      [
+        makeCredential(Marketplace.MERCADO_LIVRE, {
+          affiliateId: "ml-aff",
+        }),
+      ],
+      [
+        makeMessage({
+          text: "Ofertas https://meli.la/good e https://meli.la/bad",
+          links: ["https://meli.la/good", "https://meli.la/bad"],
+        }),
+      ],
+      (originalUrl) =>
+        originalUrl.endsWith("/bad")
+          ? {
+              rewrittenUrl: originalUrl,
+              changed: false,
+              originalItemId: "MLB123456789",
+              generatedItemId: "MLB999999999",
+              sameProduct: false,
+              canForward: false,
+              reason: "MERCADO_LIVRE_ITEM_MISMATCH",
+            }
+          : {
+              rewrittenUrl: "https://meli.la/generated-good",
+              changed: true,
+              originalItemId: "MLB123456789",
+              generatedItemId: "MLB123456789",
+              sameProduct: true,
+              canForward: true,
+            },
+    );
+
+    const result = await service.rewriteMessageForUser(
+      "test-user",
+      "message-id",
+    );
+
+    assert.equal(result.changed, true);
+    assert.equal(result.canForward, false);
+    assert.equal(result.reason, "MERCADO_LIVRE_GENERATION_FAILED");
+    assert.equal(result.rewrittenText?.includes("https://meli.la/bad"), false);
+    assert.equal(
+      result.rewrittenText?.includes("https://meli.la/generated-good"),
+      true,
+    );
   });
 
   it("returns EMPTY_TEXT for messages without text", async () => {
@@ -297,6 +458,7 @@ describe("AffiliateLinkRewriterService", () => {
         messageId: "message-id",
         changed: false,
         rewrites: [],
+        canForward: false,
         reason: "EMPTY_TEXT",
       },
     );
@@ -316,6 +478,7 @@ describe("AffiliateLinkRewriterService", () => {
         originalText: "Texto sem oferta",
         rewrittenText: "Texto sem oferta",
         rewrites: [],
+        canForward: false,
         reason: "NO_LINKS",
       },
     );

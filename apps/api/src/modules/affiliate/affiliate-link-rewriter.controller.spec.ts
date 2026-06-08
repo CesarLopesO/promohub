@@ -5,6 +5,38 @@ import { AffiliateLinkRewriterController } from "./affiliate-link-rewriter.contr
 import { Marketplace } from "./helpers/detect-marketplace";
 
 describe("AffiliateLinkRewriterController", () => {
+  it("returns Mercado Livre social diagnostics", async () => {
+    const controller = new AffiliateLinkRewriterController({
+      debugMercadoLivreSocialForUser: async () => ({
+        resolvedUrl:
+          "https://www.mercadolivre.com.br/social/creator/lists/list-id",
+        generationAttempts: [
+          {
+            url: "https://www.mercadolivre.com.br/social/creator/lists/list-id",
+            success: false,
+            status: 400,
+          },
+        ],
+        candidates: [
+          {
+            source: "canonical" as const,
+            url: "https://produto.mercadolivre.com.br/MLB-123456789-produto-_JM",
+            itemId: "MLB123456789",
+            score: 40,
+          },
+        ],
+      }),
+    } as never);
+
+    const result = await controller.debugMercadoLivreSocial(
+      { url: "https://meli.la/social" },
+      { user: { id: "test-user" } } as never,
+    );
+
+    assert.equal(result.generationAttempts[0]?.status, 400);
+    assert.equal(result.candidates[0]?.itemId, "MLB123456789");
+  });
+
   it("returns the Mercado Livre test result without session credentials", async () => {
     const controller = new AffiliateLinkRewriterController({
       testMercadoLivreForUser: async () => ({
@@ -14,6 +46,11 @@ describe("AffiliateLinkRewriterController", () => {
         resolvedUrl:
           "https://produto.mercadolivre.com.br/MLB-123456789-produto",
         itemId: "MLB123456789",
+        originalItemId: "MLB123456789",
+        strategy: "pdp_filters_item_id" as const,
+        generatedItemId: "MLB123456789",
+        sameProduct: true,
+        canForward: true,
         affiliateUrl: "https://meli.la/affiliate-real",
         changed: true,
       }),
@@ -27,11 +64,21 @@ describe("AffiliateLinkRewriterController", () => {
       marketplace: "mercado_livre",
       mode: "real",
       originalUrl: "https://meli.la/2BCJSYh",
-      resolvedUrl:
-        "https://produto.mercadolivre.com.br/MLB-123456789-produto",
+      resolvedUrl: "https://produto.mercadolivre.com.br/MLB-123456789-produto",
       itemId: "MLB123456789",
+      originalItemId: "MLB123456789",
+      strategy: "pdp_filters_item_id",
+      generatedItemId: "MLB123456789",
+      sameProduct: true,
+      canForward: true,
+      cacheHit: false,
+      candidates: [],
+      candidatesCount: 0,
+      ambiguous: false,
+      offerKeywords: [],
       affiliateUrl: "https://meli.la/affiliate-real",
       changed: true,
+      originConfidence: "none",
       reason: null,
     });
     assert.equal(JSON.stringify(result).includes("ssid"), false);
@@ -52,18 +99,66 @@ describe("AffiliateLinkRewriterController", () => {
     } as never);
 
     assert.deepEqual(
-      await controller.testMercadoLivre(
-        { url: "https://meli.la/2BCJSYh" },
-        { user: { id: "test-user" } } as never,
-      ),
+      await controller.testMercadoLivre({ url: "https://meli.la/2BCJSYh" }, {
+        user: { id: "test-user" },
+      } as never),
       {
         marketplace: "mercado_livre",
         mode: "real",
         originalUrl: "https://meli.la/2BCJSYh",
+        sameProduct: false,
+        canForward: false,
+        cacheHit: false,
+        candidates: [],
+        candidatesCount: 0,
+        ambiguous: false,
+        offerKeywords: [],
         changed: false,
+        originConfidence: "none",
         reason: "MERCADO_LIVRE_GENERATOR_URL_MISSING",
         message: "Gerador real do Mercado Livre ainda não configurado.",
       },
+    );
+  });
+
+  it("returns ranked social candidate diagnostics", async () => {
+    const candidate = {
+      source: "cta" as const,
+      url: "https://produto.mercadolivre.com.br/MLB-123456789-produto-_JM",
+      itemId: "MLB123456789",
+      score: 100,
+      title: "Produto principal",
+    };
+    const controller = new AffiliateLinkRewriterController({
+      testMercadoLivreForUser: async () => ({
+        marketplace: Marketplace.MERCADO_LIVRE,
+        originalUrl: "https://meli.la/social",
+        rewrittenUrl: "https://meli.la/new",
+        resolvedUrl:
+          "https://www.mercadolivre.com.br/social/creator/lists/list-id",
+        originProductUrl:
+          "https://produto.mercadolivre.com.br/MLB-123456789-produto-_JM",
+        socialCandidates: [candidate],
+        selectedCandidate: candidate,
+        originalItemId: "MLB123456789",
+        generatedItemId: "MLB123456789",
+        sameProduct: true,
+        canForward: true,
+        affiliateUrl: "https://meli.la/new",
+        changed: true,
+      }),
+    } as never);
+
+    const result = await controller.testMercadoLivre(
+      { url: "https://meli.la/social" },
+      { user: { id: "test-user" } } as never,
+    );
+
+    assert.equal(result.selectedCandidate?.score, 100);
+    assert.equal(result.socialCandidates?.[0]?.source, "cta");
+    assert.equal(
+      result.originProductUrl,
+      "https://produto.mercadolivre.com.br/MLB-123456789-produto-_JM",
     );
   });
 

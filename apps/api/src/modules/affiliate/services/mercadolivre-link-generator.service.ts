@@ -32,6 +32,13 @@ export class MercadoLivreSessionInvalidError extends Error {
   }
 }
 
+export class MercadoLivreGeneratorRequestError extends Error {
+  constructor(readonly status: number) {
+    super(`Generator request failed with status ${status}`);
+    this.name = "MercadoLivreGeneratorRequestError";
+  }
+}
+
 @Injectable()
 export class MercadoLivreLinkGeneratorService {
   constructor(private readonly config: ConfigService) {}
@@ -82,7 +89,7 @@ export class MercadoLivreLinkGeneratorService {
     }
 
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`Generator request failed with status ${response.status}`);
+      throw new MercadoLivreGeneratorRequestError(response.status);
     }
 
     const affiliateUrl = this.extractAffiliateUrl(response.data);
@@ -101,7 +108,7 @@ export class MercadoLivreLinkGeneratorService {
       try {
         return this.extractAffiliateUrl(JSON.parse(body) as unknown);
       } catch {
-        return body.match(/https?:\/\/meli\.la\/[^\s"'<>]+/i)?.[0];
+        return undefined;
       }
     }
 
@@ -110,43 +117,10 @@ export class MercadoLivreLinkGeneratorService {
     }
 
     const response = body as Record<string, unknown>;
-    const data =
-      response.data && typeof response.data === "object"
-        ? (response.data as Record<string, unknown>)
-        : undefined;
-
-    for (const candidate of [
-      response.short_url,
-      response.url,
-      data?.short_url,
-      data?.url,
-    ]) {
-      if (typeof candidate === "string" && this.isHttpUrl(candidate)) {
-        return candidate;
-      }
-    }
-
-    return this.findMeliUrl(body);
-  }
-
-  private findMeliUrl(value: unknown): string | undefined {
-    if (typeof value === "string") {
-      return /^https?:\/\/meli\.la\//i.test(value) ? value : undefined;
-    }
-
-    if (!value || typeof value !== "object") {
-      return undefined;
-    }
-
-    for (const candidate of Object.values(value)) {
-      const nested = this.findMeliUrl(candidate);
-
-      if (nested) {
-        return nested;
-      }
-    }
-
-    return undefined;
+    return typeof response.short_url === "string" &&
+      this.isHttpUrl(response.short_url)
+      ? response.short_url
+      : undefined;
   }
 
   private postGenerator(

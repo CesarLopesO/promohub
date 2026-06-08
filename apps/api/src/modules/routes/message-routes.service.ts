@@ -7,6 +7,7 @@ import {
 import type {
   ForwardedMessage,
   MessageRoute,
+  Prisma,
 } from "@prisma/client";
 
 import {
@@ -57,6 +58,8 @@ export type ForwardedMessageDto = {
   mode?: string;
   sentMessageType?: string;
   mediaForwarded: boolean;
+  sentProviderMessageId?: string;
+  sentProviderRaw?: Prisma.JsonValue;
   error?: string;
   sentAt?: Date;
   createdAt: Date;
@@ -307,7 +310,8 @@ export class MessageRoutesService {
       destinationGroups,
       rewrittenText:
         rewritePreview.rewrittenText ?? rewritePreview.originalText ?? "",
-      canForward: destinationGroups.length > 0,
+      canForward:
+        destinationGroups.length > 0 && rewritePreview.canForward,
       rewrites: rewritePreview.rewrites,
     };
   }
@@ -396,6 +400,8 @@ export class MessageRoutesService {
       mode: message.mode ?? undefined,
       sentMessageType: message.sentMessageType ?? undefined,
       mediaForwarded: message.mediaForwarded,
+      sentProviderMessageId: message.sentProviderMessageId ?? undefined,
+      sentProviderRaw: message.sentProviderRaw ?? undefined,
       error: message.error ?? undefined,
       sentAt: message.sentAt ?? undefined,
       createdAt: message.createdAt,

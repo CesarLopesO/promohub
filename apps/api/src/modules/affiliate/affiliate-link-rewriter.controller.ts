@@ -15,6 +15,7 @@ import {
 } from "./dto/rewrite-affiliate-link.dto";
 import { TestMercadoLivreLinkDto } from "./dto/test-mercadolivre-link.dto";
 import { TestMercadoLivreRawDto } from "./dto/test-mercadolivre-raw.dto";
+import { DebugMercadoLivreSocialDto } from "./dto/debug-mercadolivre-social.dto";
 
 @UseGuards(JwtAuthGuard)
 @Controller("affiliate")
@@ -52,7 +53,55 @@ export class AffiliateLinkRewriterController {
       mode: result.mode ?? "real",
       originalUrl: result.originalUrl,
       ...(result.resolvedUrl ? { resolvedUrl: result.resolvedUrl } : {}),
+      ...(result.attemptedPayloadUrl
+        ? { attemptedPayloadUrl: result.attemptedPayloadUrl }
+        : {}),
       ...(result.itemId ? { itemId: result.itemId } : {}),
+      ...(result.originalItemId
+        ? { originalItemId: result.originalItemId }
+        : {}),
+      ...(result.generatedItemId
+        ? { generatedItemId: result.generatedItemId }
+        : {}),
+      sameProduct: result.sameProduct ?? false,
+      canForward: result.canForward ?? false,
+      ...(result.originProductUrl
+        ? { originProductUrl: result.originProductUrl }
+        : {}),
+      ...(result.mainProductUrl
+        ? { mainProductUrl: result.mainProductUrl }
+        : {}),
+      ...(result.mainProductSource
+        ? { mainProductSource: result.mainProductSource }
+        : {}),
+      ...(result.mainProductPath
+        ? { mainProductPath: result.mainProductPath }
+        : {}),
+      ...(result.strategy ? { strategy: result.strategy } : {}),
+      ...(result.finalProductUrl
+        ? { finalProductUrl: result.finalProductUrl }
+        : {}),
+      originConfidence: result.originConfidence ?? "none",
+      ...(result.generationAttempts
+        ? { generationAttempts: result.generationAttempts }
+        : {}),
+      ...(result.socialDebug ? { socialDebug: result.socialDebug } : {}),
+      ...(result.socialCandidates
+        ? { socialCandidates: result.socialCandidates }
+        : {}),
+      candidates: result.candidates ?? result.socialCandidates ?? [],
+      ...(result.selectedCandidate
+        ? { selectedCandidate: result.selectedCandidate }
+        : {}),
+      ...(result.score !== undefined ? { score: result.score } : {}),
+      candidatesCount: result.candidatesCount ?? result.candidates?.length ?? 0,
+      ambiguous: result.ambiguous ?? false,
+      ...(result.selectedCandidateReason
+        ? { selectedCandidateReason: result.selectedCandidateReason }
+        : {}),
+      offerKeywords: result.offerKeywords ?? [],
+      cacheHit: result.cacheHit ?? false,
+      ...(result.matchReason ? { matchReason: result.matchReason } : {}),
       ...(result.changed && result.affiliateUrl
         ? { affiliateUrl: result.affiliateUrl }
         : {}),
@@ -68,6 +117,17 @@ export class AffiliateLinkRewriterController {
         ? { error: result.error }
         : {}),
     };
+  }
+
+  @Post("debug/mercado-livre-social")
+  debugMercadoLivreSocial(
+    @Body() body: DebugMercadoLivreSocialDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.rewriterService.debugMercadoLivreSocialForUser(
+      req.user.id,
+      body.url,
+    );
   }
 
   @Post("test/raw")
@@ -109,6 +169,15 @@ export class AffiliateLinkRewriterController {
       case "MERCADO_LIVRE_DISABLED":
         return {
           message: "Geração de links Mercado Livre está desativada.",
+        };
+      case "MERCADO_LIVRE_ITEM_MISMATCH":
+        return {
+          message: "O link gerado não corresponde ao produto original.",
+        };
+      case "MERCADO_LIVRE_PRODUCT_NOT_FOUND":
+        return {
+          message:
+            "Não foi possível identificar com confiança o produto principal da página social.",
         };
       default:
         return {};

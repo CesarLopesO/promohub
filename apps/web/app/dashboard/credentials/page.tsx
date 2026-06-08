@@ -34,13 +34,77 @@ type MercadoLivreTestResult = {
   mode: "real" | "legacy" | "disabled";
   originalUrl: string;
   resolvedUrl?: string;
+  attemptedPayloadUrl?: string;
   itemId?: string;
+  originalItemId?: string;
+  generatedItemId?: string;
+  sameProduct: boolean;
+  canForward: boolean;
+  originProductUrl?: string;
+  mainProductUrl?: string;
+  mainProductSource?: "primary_cta" | "preloaded_primary" | "none";
+  originConfidence?: "explicit" | "canonical" | "none";
   affiliateUrl?: string;
   changed: boolean;
   reason: string | null;
   error?: string;
   message?: string;
   warning?: string;
+  cacheHit: boolean;
+  matchReason?: string;
+  score?: number;
+  candidatesCount?: number;
+  ambiguous?: boolean;
+  selectedCandidateReason?: string;
+  offerKeywords?: string[];
+  generationAttempts?: Array<{
+    url: string;
+    success: boolean;
+    status?: number;
+    error?: string;
+  }>;
+  socialDebug?: {
+    resolvedUrl: string;
+    candidates: Array<{
+      source: "cta" | "json_field" | "json_ld" | "canonical" | "og" | "href";
+      url: string;
+      itemId?: string;
+      score: number;
+      title?: string;
+      textContext?: string;
+      matchReason?: string;
+    }>;
+  };
+  socialCandidates?: Array<{
+    source: "cta" | "json_field" | "json_ld" | "canonical" | "og" | "href";
+    url: string;
+    itemId?: string;
+    score: number;
+    title?: string;
+    matchReason?: string;
+    matchedKeywords?: string[];
+    rejectedReason?: string;
+  }>;
+  selectedCandidate?: {
+    source: "cta" | "json_field" | "json_ld" | "canonical" | "og" | "href";
+    url: string;
+    itemId?: string;
+    score: number;
+    title?: string;
+    matchReason?: string;
+    matchedKeywords?: string[];
+    rejectedReason?: string;
+  };
+  candidates?: Array<{
+    source: "cta" | "json_field" | "json_ld" | "canonical" | "og" | "href";
+    url: string;
+    itemId?: string;
+    score: number;
+    title?: string;
+    matchReason?: string;
+    matchedKeywords?: string[];
+    rejectedReason?: string;
+  }>;
 };
 
 type MercadoLivreRawResult = {
@@ -594,7 +658,62 @@ function MercadoLivreTestDetails({
       <dl className="mt-3 grid gap-2">
         <Row label="URL original" value={result.originalUrl} />
         <Row label="URL resolvida" value={result.resolvedUrl || "-"} />
+        <Row
+          label="URL enviada ao endpoint"
+          value={result.attemptedPayloadUrl || "-"}
+        />
+        <Row
+          label="Produto de origem"
+          value={result.originProductUrl || "-"}
+        />
+        <Row
+          label="Confiança da origem"
+          value={result.originConfidence || "none"}
+        />
         {result.itemId ? <Row label="Item ID" value={result.itemId} /> : null}
+        <Row
+          label="Item original"
+          value={result.originalItemId || "-"}
+        />
+        <Row
+          label="Item gerado"
+          value={result.generatedItemId || "-"}
+        />
+        <Row
+          label="Mesmo produto"
+          value={result.sameProduct ? "Sim" : "Não"}
+        />
+        <Row
+          label="Pode encaminhar"
+          value={result.canForward ? "Sim" : "Não"}
+        />
+        <Row label="Produto principal" value={result.mainProductUrl || "-"} />
+        <Row
+          label="Fonte do produto principal"
+          value={result.mainProductSource || "-"}
+        />
+        <Row label="Cache" value={result.cacheHit ? "Hit" : "Miss"} />
+        <Row label="Motivo do match" value={result.matchReason || "-"} />
+        <Row
+          label="Score selecionado"
+          value={result.score === undefined ? "-" : String(result.score)}
+        />
+        <Row
+          label="Quantidade de candidatos"
+          value={String(result.candidatesCount ?? 0)}
+        />
+        <Row
+          label="Múltiplos candidatos"
+          value={result.ambiguous ? "Sim" : "Não"}
+        />
+        <Row
+          label="Motivo da seleção"
+          value={result.selectedCandidateReason || "-"}
+        />
+        <Row
+          label="Palavras da oferta"
+          value={result.offerKeywords?.join(", ") || "-"}
+        />
         <Row label="Link afiliado" value={result.affiliateUrl || "-"} />
         <Row label="Modo" value={result.mode} />
         {result.warning ? <Row label="Aviso" value={result.warning} /> : null}
@@ -602,6 +721,59 @@ function MercadoLivreTestDetails({
           <Row label="Status" value={message || result.reason || "-"} />
         ) : null}
       </dl>
+      {result.generationAttempts?.length ? (
+        <div className="mt-4">
+          <p className="font-semibold text-slate-950">Tentativas de geração</p>
+          <ul className="mt-2 space-y-2">
+            {result.generationAttempts.map((attempt, index) => (
+              <li
+                className="rounded border border-slate-200 bg-white p-2"
+                key={`${attempt.url}-${index}`}
+              >
+                <p className="break-all">{attempt.url}</p>
+                <p className="text-slate-600">
+                  {attempt.success
+                    ? "Sucesso"
+                    : `Falha${attempt.status ? ` HTTP ${attempt.status}` : ""}`}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {result.socialDebug ? (
+        <div className="mt-4">
+          <p className="font-semibold text-slate-950">
+            Candidatos da página social
+          </p>
+          <p className="mt-1 break-all text-slate-600">
+            {result.socialDebug.resolvedUrl}
+          </p>
+          {result.socialDebug.candidates.length ? (
+            <ul className="mt-2 space-y-2">
+              {result.socialDebug.candidates.map((candidate, index) => (
+                <li
+                  className="rounded border border-slate-200 bg-white p-2"
+                  key={`${candidate.url}-${index}`}
+                >
+                  <p className="font-medium">
+                    {candidate.source}
+                    {candidate.itemId ? ` · ${candidate.itemId}` : ""}
+                  </p>
+                  <p className="break-all">{candidate.url}</p>
+                  {candidate.textContext ? (
+                    <p className="mt-1 text-slate-600">
+                      {candidate.textContext}
+                    </p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-slate-600">Nenhum candidato encontrado.</p>
+          )}
+        </div>
+      ) : null}
       {result.affiliateUrl ? (
         <Button
           className="mt-3"

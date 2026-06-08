@@ -46,7 +46,7 @@ function response(status: number, data: unknown, headers: object = {}) {
 }
 
 describe("MercadoLivreLinkGeneratorService", () => {
-  it("extracts official response URL fields", () => {
+  it("accepts only the official short_url response field", () => {
     const service = makeService();
 
     assert.equal(
@@ -57,11 +57,11 @@ describe("MercadoLivreLinkGeneratorService", () => {
       service.extractAffiliateUrl({
         data: { short_url: "https://meli.la/nested" },
       }),
-      "https://meli.la/nested",
+      undefined,
     );
     assert.equal(
       service.extractAffiliateUrl({ data: { url: "https://meli.la/url" } }),
-      "https://meli.la/url",
+      undefined,
     );
   });
 
@@ -104,7 +104,7 @@ describe("MercadoLivreLinkGeneratorService", () => {
     let requestedUrl = "";
     axios.post = (async (url) => {
       requestedUrl = url;
-      return response(200, { url: "https://meli.la/generated" });
+      return response(200, { short_url: "https://meli.la/generated" });
     }) as typeof axios.post;
 
     await makeService("https://env.example/generator").generateAffiliateLink(

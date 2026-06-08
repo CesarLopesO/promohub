@@ -32,6 +32,8 @@ type StoredForwarded = {
   mode?: string | null;
   sentMessageType?: string | null;
   mediaForwarded: boolean;
+  sentProviderMessageId?: string | null;
+  sentProviderRaw?: unknown;
   sentAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -57,8 +59,21 @@ function makeService(options?: {
   forwarded?: StoredForwarded[];
   rewrittenText?: string;
   rewriteMode?: "real" | "legacy" | "disabled";
+  rewriteMarketplace?: Marketplace;
+  rewriteSameProduct?: boolean;
+  rewriteCanForward?: boolean;
+  rewriteReason?: string;
+  rewriteResults?: Array<{
+    originalUrl: string;
+    rewrittenUrl: string;
+    marketplace: Marketplace;
+    changed: boolean;
+    canForward?: boolean;
+    reason?: string;
+  }>;
   sessionStatus?: string;
   sendMessageError?: Error;
+  sendMessageResult?: unknown;
 }) {
   const routes = [...(options?.routes ?? [])];
   const messages = options?.messages ?? [];
@@ -192,19 +207,38 @@ function makeService(options?: {
   const linkRewriter = {
     rewriteMessageForUser: async (_userId: string, messageId: string) => {
       const message = messages.find((item) => item.id === messageId);
+      const isMercadoLivre =
+        options?.rewriteMarketplace === Marketplace.MERCADO_LIVRE;
 
       return {
         messageId,
         changed: Boolean(options?.rewrittenText),
+        canForward:
+          Boolean(options?.rewrittenText) &&
+          options?.rewriteCanForward !== false,
         originalText: message?.text ?? "",
         rewrittenText: options?.rewrittenText ?? message?.text ?? "",
-        rewrites: [
+        rewrites: options?.rewriteResults ?? [
           {
-            originalUrl: "https://amzn.to/abc",
-            rewrittenUrl: "https://amzn.to/abc?tag=meutag-20",
-            marketplace: Marketplace.AMAZON,
+            originalUrl: isMercadoLivre
+              ? "https://meli.la/original"
+              : "https://amzn.to/abc",
+            rewrittenUrl: isMercadoLivre
+              ? options?.rewrittenText ?? "https://meli.la/generated"
+              : "https://amzn.to/abc?tag=meutag-20",
+            marketplace:
+              options?.rewriteMarketplace ?? Marketplace.AMAZON,
             changed: Boolean(options?.rewrittenText),
             ...(options?.rewriteMode ? { mode: options.rewriteMode } : {}),
+            ...(options?.rewriteSameProduct !== undefined
+              ? { sameProduct: options.rewriteSameProduct }
+              : {}),
+            ...(options?.rewriteCanForward !== undefined
+              ? { canForward: options.rewriteCanForward }
+              : {}),
+            ...(options?.rewriteReason
+              ? { reason: options.rewriteReason }
+              : {}),
           },
         ],
       };
@@ -219,6 +253,18 @@ function makeService(options?: {
           }
 
           sentMessages.push({ jid, content });
+          return (
+            options?.sendMessageResult ?? {
+              key: {
+                id: "provider-message-id",
+                remoteJid: jid,
+                fromMe: true,
+              },
+              messageTimestamp: 1_717_171_717,
+              status: 1,
+              message: content,
+            }
+          );
         },
       },
     }),
@@ -450,6 +496,16 @@ describe("MessageRoutesService", () => {
 
     assert.equal(response.sentCount, 1);
     assert.equal(forwarded[0]?.mode, "MANUAL");
+    assert.equal(forwarded[0]?.sentProviderMessageId, "provider-message-id");
+    assert.deepEqual(forwarded[0]?.sentProviderRaw, {
+      key: {
+        id: "provider-message-id",
+        remoteJid: "120363424647658210@g.us",
+        fromMe: true,
+      },
+      messageTimestamp: 1_717_171_717,
+      status: 1,
+    });
     assert.deepEqual(sentMessages, [
       {
         jid: "120363424647658210@g.us",
@@ -534,6 +590,278 @@ describe("MessageRoutesService", () => {
     assert.equal(response.sentCount, 1);
     assert.equal(forwarded[0]?.mode, "AUTO");
     assert.equal(sentMessages.length, 1);
+  });
+
+  it("auto forward sends when all Mercado Livre links were converted", async () => {
+    const { forwardingService, forwarded, sentMessages } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "https://meli.la/one https://meli.la/two",
+          links: ["https://meli.la/one", "https://meli.la/two"],
+        },
+      ],
+      rewrittenText: "https://meli.la/generated-one https://meli.la/generated-two",
+      rewriteResults: [
+        {
+          originalUrl: "https://meli.la/one",
+          rewrittenUrl: "https://meli.la/generated-one",
+          marketplace: Marketplace.MERCADO_LIVRE,
+          changed: true,
+          canForward: true,
+        },
+        {
+          originalUrl: "https://meli.la/two",
+          rewrittenUrl: "https://meli.la/generated-two",
+          marketplace: Marketplace.MERCADO_LIVRE,
+          changed: true,
+          canForward: true,
+        },
+      ],
+    });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+      }
+    ).waitRandomDelay = async () => undefined;
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+      { mode: "auto" },
+    );
+
+    assert.equal(response.sentCount, 1);
+    assert.equal(sentMessages.length, 1);
+    assert.equal(forwarded[0]?.status, "SENT");
+  });
+
+  it("auto forward skips when any Mercado Livre link fails conversion", async () => {
+    const { forwardingService, forwarded, sentMessages } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "https://meli.la/good https://meli.la/bad",
+          links: ["https://meli.la/good", "https://meli.la/bad"],
+        },
+      ],
+      rewrittenText: "https://meli.la/generated-good",
+      rewriteResults: [
+        {
+          originalUrl: "https://meli.la/good",
+          rewrittenUrl: "https://meli.la/generated-good",
+          marketplace: Marketplace.MERCADO_LIVRE,
+          changed: true,
+          canForward: true,
+        },
+        {
+          originalUrl: "https://meli.la/bad",
+          rewrittenUrl: "https://meli.la/bad",
+          marketplace: Marketplace.MERCADO_LIVRE,
+          changed: false,
+          canForward: false,
+          reason: "MERCADO_LIVRE_GENERATION_FAILED",
+        },
+      ],
+    });
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+      { mode: "auto" },
+    );
+
+    assert.equal(response.sentCount, 0);
+    assert.equal(response.skippedCount, 1);
+    assert.equal(response.results[0]?.error, "MERCADO_LIVRE_GENERATION_FAILED");
+    assert.equal(forwarded[0]?.status, "SKIPPED");
+    assert.equal(forwarded[0]?.error, "MERCADO_LIVRE_GENERATION_FAILED");
+    assert.deepEqual(sentMessages, []);
+  });
+
+  it("auto forward skips when generation from the selected candidate fails", async () => {
+    const { forwardingService, forwarded, sentMessages } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "https://meli.la/social",
+          links: ["https://meli.la/social"],
+        },
+      ],
+      rewriteResults: [
+        {
+          originalUrl: "https://meli.la/social",
+          rewrittenUrl: "https://meli.la/social",
+          marketplace: Marketplace.MERCADO_LIVRE,
+          changed: false,
+          canForward: false,
+          reason: "MERCADO_LIVRE_GENERATION_FAILED",
+        },
+      ],
+    });
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+      { mode: "auto" },
+    );
+
+    assert.equal(response.sentCount, 0);
+    assert.equal(forwarded[0]?.status, "SKIPPED");
+    assert.deepEqual(sentMessages, []);
+  });
+
+  it("auto forward sends a short URL generated from a social candidate", async () => {
+    const { forwardingService, forwarded, sentMessages } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "https://meli.la/social-original",
+          links: ["https://meli.la/social-original"],
+        },
+      ],
+      rewrittenText: "https://meli.la/generated-from-candidate",
+      rewriteResults: [
+        {
+          originalUrl: "https://meli.la/social-original",
+          rewrittenUrl: "https://meli.la/generated-from-candidate",
+          marketplace: Marketplace.MERCADO_LIVRE,
+          changed: true,
+          canForward: true,
+        },
+      ],
+    });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+      }
+    ).waitRandomDelay = async () => undefined;
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+      { mode: "auto" },
+    );
+
+    assert.equal(response.sentCount, 1);
+    assert.equal(forwarded[0]?.status, "SENT");
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      "https://meli.la/generated-from-candidate",
+    );
+  });
+
+  it("auto forward sends a cached Mercado Livre conversion", async () => {
+    const { forwardingService, sentMessages } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "https://meli.la/repeated",
+          links: ["https://meli.la/repeated"],
+        },
+      ],
+      rewrittenText: "https://meli.la/cached-affiliate",
+      rewriteResults: [
+        {
+          originalUrl: "https://meli.la/repeated",
+          rewrittenUrl: "https://meli.la/cached-affiliate",
+          marketplace: Marketplace.MERCADO_LIVRE,
+          changed: true,
+          canForward: true,
+          reason: "CACHE_HIT",
+        },
+      ],
+    });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+      }
+    ).waitRandomDelay = async () => undefined;
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+      { mode: "auto" },
+    );
+
+    assert.equal(response.sentCount, 1);
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      "https://meli.la/cached-affiliate",
+    );
+  });
+
+  it("auto forward sends image with the short URL generated from the product", async () => {
+    const { forwardingService, forwarded, sentMessages } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://meli.la/social-original",
+          links: ["https://meli.la/social-original"],
+          messageType: "image",
+          hasMedia: true,
+          rawMessage: {
+            message: {
+              imageMessage: {
+                url: "https://example.com/image.jpg",
+              },
+            },
+          },
+        },
+      ],
+      rewrittenText: "Oferta https://meli.la/generated-from-product",
+      rewriteResults: [
+        {
+          originalUrl: "https://meli.la/social-original",
+          rewrittenUrl: "https://meli.la/generated-from-product",
+          marketplace: Marketplace.MERCADO_LIVRE,
+          changed: true,
+          canForward: true,
+        },
+      ],
+    });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+        downloadImage: () => Promise<Buffer>;
+      }
+    ).waitRandomDelay = async () => undefined;
+    (
+      forwardingService as unknown as {
+        downloadImage: () => Promise<Buffer>;
+      }
+    ).downloadImage = async () => Buffer.from("image");
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+      { mode: "auto" },
+    );
+
+    assert.equal(response.sentCount, 1);
+    assert.equal(forwarded[0]?.mediaForwarded, true);
+    assert.deepEqual(sentMessages[0]?.content, {
+      image: Buffer.from("image"),
+      caption: "Oferta https://meli.la/generated-from-product",
+    });
   });
 
   it("forwards image messages with rewritten caption", async () => {
@@ -727,6 +1055,10 @@ describe("MessageRoutesService", () => {
       ],
       rewrittenText: "https://meli.la/abc?aff_id=ml-aff",
       rewriteMode: "legacy",
+      rewriteMarketplace: Marketplace.MERCADO_LIVRE,
+      rewriteSameProduct: false,
+      rewriteCanForward: false,
+      rewriteReason: "MERCADO_LIVRE_LEGACY_NOT_VERIFIED",
     });
 
     const response = await forwardingService.forwardMessageById(
@@ -736,10 +1068,15 @@ describe("MessageRoutesService", () => {
     );
 
     assert.equal(response.sentCount, 0);
+    assert.equal(response.skippedCount, 1);
+    assert.equal(
+      response.results[0]?.error,
+      "MERCADO_LIVRE_GENERATION_FAILED",
+    );
     assert.deepEqual(sentMessages, []);
   });
 
-  it("auto forward allows legacy rewrites only when explicitly enabled", async () => {
+  it("auto forward blocks legacy rewrites even when the old flag is enabled", async () => {
     process.env.MERCADO_LIVRE_LEGACY_FORWARD_ENABLED = "true";
     const { forwardingService, sentMessages } = makeService({
       routes: [makeRoute()],
@@ -754,6 +1091,10 @@ describe("MessageRoutesService", () => {
       ],
       rewrittenText: "https://meli.la/abc?aff_id=ml-aff",
       rewriteMode: "legacy",
+      rewriteMarketplace: Marketplace.MERCADO_LIVRE,
+      rewriteSameProduct: false,
+      rewriteCanForward: false,
+      rewriteReason: "MERCADO_LIVRE_LEGACY_NOT_VERIFIED",
     });
     (
       forwardingService as unknown as {
@@ -768,8 +1109,9 @@ describe("MessageRoutesService", () => {
         { mode: "auto" },
       );
 
-      assert.equal(response.sentCount, 1);
-      assert.equal(sentMessages.length, 1);
+      assert.equal(response.sentCount, 0);
+      assert.equal(response.skippedCount, 1);
+      assert.equal(sentMessages.length, 0);
     } finally {
       delete process.env.MERCADO_LIVRE_LEGACY_FORWARD_ENABLED;
     }
