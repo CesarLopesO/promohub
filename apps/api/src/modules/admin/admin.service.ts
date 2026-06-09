@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { Plan, Prisma, SubscriptionStatus } from "@prisma/client";
 
 import { PrismaService } from "../../prisma.service";
@@ -89,13 +93,15 @@ export class AdminService {
       this.prisma.forwardedMessage.count({
         where: { sentMessageType: "text_fallback" },
       }),
-      this.prisma.subscription.count(),
-      this.prisma.subscription.count({ where: { status: "PENDING" } }),
-      this.prisma.subscription.count({ where: { status: "ACTIVE" } }),
-      this.prisma.subscription.count({
+      this.prisma.billingSubscription.count(),
+      this.prisma.billingSubscription.count({ where: { status: "PENDING" } }),
+      this.prisma.billingSubscription.count({ where: { status: "ACTIVE" } }),
+      this.prisma.billingSubscription.count({
         where: { status: { in: ["PAST_DUE", "OVERDUE"] } },
       }),
-      this.prisma.subscription.count({ where: { status: "CANCELED" } }),
+      this.prisma.billingSubscription.count({
+        where: { status: "CANCELED" },
+      }),
     ]);
 
     return {
@@ -188,7 +194,7 @@ export class AdminService {
         isActive: true,
         createdAt: true,
         updatedAt: true,
-        subscriptions: {
+        billingSubscriptions: {
           orderBy: { createdAt: "desc" },
           take: 1,
           select: {
@@ -200,6 +206,9 @@ export class AdminService {
             currentPeriodStart: true,
             currentPeriodEnd: true,
             canceledAt: true,
+            providerCustomerId: true,
+            providerSubscriptionId: true,
+            providerPaymentId: true,
             createdAt: true,
             updatedAt: true,
           },
@@ -267,8 +276,8 @@ export class AdminService {
 
     return {
       ...user,
-      subscription: user.subscriptions[0] ?? null,
-      subscriptions: undefined,
+      subscription: user.billingSubscriptions[0] ?? null,
+      billingSubscriptions: undefined,
       sessions,
       routes,
       credentials: credentials.map(({ metadata, ...credential }) => ({
@@ -533,7 +542,9 @@ export class AdminService {
   }
 
   private hasLinks(value: Prisma.JsonValue | null): boolean {
-    return Array.isArray(value) && value.some((item) => typeof item === "string");
+    return (
+      Array.isArray(value) && value.some((item) => typeof item === "string")
+    );
   }
 
   private normalizePlan(value: unknown): Plan {

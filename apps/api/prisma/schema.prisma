@@ -34,6 +34,7 @@ model User {
   email              String             @unique
   passwordHash       String
   name               String?
+  cpfCnpj            String?
   role               String             @default("USER")
   plan               Plan               @default(FREE)
   subscriptionStatus SubscriptionStatus @default(NONE)
@@ -41,6 +42,7 @@ model User {
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
   subscriptions      Subscription[]
+  billingSubscriptions BillingSubscription[]
 }
 
 model Subscription {
@@ -62,6 +64,47 @@ model Subscription {
   @@index([status])
   @@index([plan])
   @@index([providerSubscriptionId])
+}
+
+model BillingSubscription {
+  id                     String             @id @default(cuid())
+  userId                 String
+  plan                   Plan
+  provider               String             @default("asaas")
+  providerCustomerId     String?
+  providerSubscriptionId String?
+  providerPaymentId      String?
+  status                 SubscriptionStatus @default(PENDING)
+  checkoutUrl            String?
+  currentPeriodStart     DateTime?
+  currentPeriodEnd       DateTime?
+  canceledAt             DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  user                   User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([provider])
+  @@index([status])
+  @@index([plan])
+  @@index([providerCustomerId])
+  @@index([providerSubscriptionId])
+  @@index([providerPaymentId])
+}
+
+model BillingWebhookEvent {
+  id          String    @id @default(cuid())
+  provider    String
+  eventId     String
+  eventType   String
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([eventId])
+  @@index([provider])
+  @@index([eventType])
+  @@index([processedAt])
 }
 
 model WhatsAppSession {

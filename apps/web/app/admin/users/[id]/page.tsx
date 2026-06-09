@@ -4,11 +4,7 @@ import { useParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 
 import { Button } from "@promohub/ui/button";
-import {
-  ErrorBox,
-  LoadingBlock,
-  PageHeader,
-} from "@/src/components/ui-state";
+import { ErrorBox, LoadingBlock, PageHeader } from "@/src/components/ui-state";
 import { apiFetch } from "@/src/lib/api";
 
 type AdminUserDetail = {
@@ -20,12 +16,51 @@ type AdminUserDetail = {
   subscriptionStatus: string;
   isActive: boolean;
   createdAt: string;
-  subscription?: { plan: string; status: string; checkoutUrl?: string } | null;
-  sessions: Array<{ id: string; sessionId: string; status: string; phoneNumber?: string }>;
-  routes: Array<{ id: string; sourceGroupJid: string; destinationGroupJid: string; isActive: boolean }>;
-  credentials: Array<{ id: string; marketplace: string; affiliateId?: string; trackingId?: string; isActive: boolean }>;
-  forwards: Array<{ id: string; status: string; mode?: string; error?: string; createdAt: string }>;
-  messages: Array<{ id: string; groupJid: string; messageType: string; text?: string; createdAt: string }>;
+  subscription?: {
+    plan: string;
+    status: string;
+    provider: string;
+    checkoutUrl?: string;
+    providerCustomerId?: string;
+    providerSubscriptionId?: string;
+    providerPaymentId?: string;
+    currentPeriodStart?: string;
+    currentPeriodEnd?: string;
+    canceledAt?: string;
+  } | null;
+  sessions: Array<{
+    id: string;
+    sessionId: string;
+    status: string;
+    phoneNumber?: string;
+  }>;
+  routes: Array<{
+    id: string;
+    sourceGroupJid: string;
+    destinationGroupJid: string;
+    isActive: boolean;
+  }>;
+  credentials: Array<{
+    id: string;
+    marketplace: string;
+    affiliateId?: string;
+    trackingId?: string;
+    isActive: boolean;
+  }>;
+  forwards: Array<{
+    id: string;
+    status: string;
+    mode?: string;
+    error?: string;
+    createdAt: string;
+  }>;
+  messages: Array<{
+    id: string;
+    groupJid: string;
+    messageType: string;
+    text?: string;
+    createdAt: string;
+  }>;
 };
 
 type PlanUsage = {
@@ -80,7 +115,9 @@ export default function AdminUserDetailPage() {
         isActive: result.isActive,
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao carregar usuário.");
+      setError(
+        err instanceof Error ? err.message : "Erro ao carregar usuário.",
+      );
     } finally {
       setLoading(false);
     }
@@ -115,9 +152,12 @@ export default function AdminUserDetailPage() {
     setError(null);
 
     try {
-      await apiFetch(`/admin/users/${params.id}/${isActive ? "resume" : "pause"}`, {
-        method: "POST",
-      });
+      await apiFetch(
+        `/admin/users/${params.id}/${isActive ? "resume" : "pause"}`,
+        {
+          method: "POST",
+        },
+      );
       await load();
       setMessage(isActive ? "Usuário reativado." : "Usuário pausado.");
     } catch (err) {
@@ -141,9 +181,16 @@ export default function AdminUserDetailPage() {
 
   return (
     <div>
-      <PageHeader title={user.email} description="Detalhes e controle manual." />
+      <PageHeader
+        title={user.email}
+        description="Detalhes e controle manual."
+      />
 
-      {error ? <div className="mb-4"><ErrorBox message={error} /></div> : null}
+      {error ? (
+        <div className="mb-4">
+          <ErrorBox message={error} />
+        </div>
+      ) : null}
       {message ? (
         <div className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
           {message}
@@ -157,25 +204,40 @@ export default function AdminUserDetailPage() {
         <Field label="Nome">
           <input
             className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
-            onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+            onChange={(event) =>
+              setForm((current) => ({ ...current, name: event.target.value }))
+            }
             value={form.name}
           />
         </Field>
         <SelectField
           label="Plano"
-          onChange={(value) => setForm((current) => ({ ...current, plan: value }))}
+          onChange={(value) =>
+            setForm((current) => ({ ...current, plan: value }))
+          }
           options={["FREE", "BASIC", "PRO"]}
           value={form.plan}
         />
         <SelectField
           label="Assinatura"
-          onChange={(value) => setForm((current) => ({ ...current, subscriptionStatus: value }))}
-          options={["NONE", "PENDING", "ACTIVE", "OVERDUE", "PAST_DUE", "CANCELED"]}
+          onChange={(value) =>
+            setForm((current) => ({ ...current, subscriptionStatus: value }))
+          }
+          options={[
+            "NONE",
+            "PENDING",
+            "ACTIVE",
+            "OVERDUE",
+            "PAST_DUE",
+            "CANCELED",
+          ]}
           value={form.subscriptionStatus}
         />
         <SelectField
           label="Role"
-          onChange={(value) => setForm((current) => ({ ...current, role: value }))}
+          onChange={(value) =>
+            setForm((current) => ({ ...current, role: value }))
+          }
           options={["USER", "ADMIN"]}
           value={form.role}
         />
@@ -183,7 +245,12 @@ export default function AdminUserDetailPage() {
           Ativo
           <select
             className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
-            onChange={(event) => setForm((current) => ({ ...current, isActive: event.target.value === "true" }))}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                isActive: event.target.value === "true",
+              }))
+            }
             value={String(form.isActive)}
           >
             <option value="true">Sim</option>
@@ -208,7 +275,11 @@ export default function AdminUserDetailPage() {
       <section className="grid gap-4 xl:grid-cols-2">
         <Panel title="Sessões">
           {user.sessions.map((session) => (
-            <Row key={session.id} label={session.sessionId} value={session.status} />
+            <Row
+              key={session.id}
+              label={session.sessionId}
+              value={session.status}
+            />
           ))}
         </Panel>
         <Panel title="Rotas">
@@ -252,6 +323,29 @@ export default function AdminUserDetailPage() {
           <Row
             label="Status"
             value={user.subscription?.status ?? user.subscriptionStatus}
+          />
+          <Row
+            label="Provedor"
+            value={user.subscription?.provider ?? "Sem assinatura"}
+          />
+          <Row
+            label="ID assinatura"
+            value={user.subscription?.providerSubscriptionId ?? "-"}
+          />
+          <Row
+            label="ID cobrança"
+            value={user.subscription?.providerPaymentId ?? "-"}
+          />
+          <Row
+            label="Período atual"
+            value={
+              user.subscription?.currentPeriodStart &&
+              user.subscription.currentPeriodEnd
+                ? `${formatDate(user.subscription.currentPeriodStart)} até ${formatDate(
+                    user.subscription.currentPeriodEnd,
+                  )}`
+                : "-"
+            }
           />
         </Panel>
         {usage ? (
@@ -329,7 +423,13 @@ function SelectField({
   );
 }
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+function Panel({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-5">
       <h2 className="mb-4 text-base font-semibold text-slate-950">{title}</h2>

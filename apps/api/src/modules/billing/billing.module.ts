@@ -5,10 +5,11 @@ import { AuthModule } from "../auth/auth.module";
 import { PlansModule } from "../plans/plans.module";
 import { BillingController } from "./billing.controller";
 import { BillingService } from "./billing.service";
+import { AsaasService } from "./asaas.service";
 
 @Module({
   imports: [AuthModule, PlansModule],
   controllers: [BillingController],
-  providers: [PrismaService, BillingService],
+  providers: [PrismaService, AsaasService, BillingService],
 })
 export class BillingModule {}

@@ -16,7 +16,7 @@ import { WhatsAppSessionModule } from "./whatsapp/whatsapp-session.module";
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ["../../.env", ".env"],
+      envFilePath: ["apps/api/.env", ".env"],
     }),
     AdminModule,
     AuthModule,
