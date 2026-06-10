@@ -26,6 +26,7 @@ import {
   replaceWhatsAppLinks,
 } from "./helpers/whatsapp-link-rewriter";
 import { WhatsAppInviteService } from "../../whatsapp/invites/whatsapp-invite.service";
+import { RoutedGroupsCacheService } from "../../whatsapp/messages/routed-groups-cache.service";
 
 export type MessageRouteDto = {
   id: string;
@@ -86,6 +87,7 @@ export class MessageRoutesService {
     private readonly forwardingService: MessageForwardingService,
     private readonly planLimits: PlanLimitsService,
     private readonly inviteService: WhatsAppInviteService,
+    private readonly routedGroupsCache: RoutedGroupsCacheService,
   ) {}
 
   async create(
@@ -146,6 +148,7 @@ export class MessageRoutesService {
         },
       });
 
+      this.routedGroupsCache.invalidate(reactivated.sessionId);
       return this.toDto(reactivated);
     }
 
@@ -163,6 +166,7 @@ export class MessageRoutesService {
         },
       });
 
+      this.routedGroupsCache.invalidate(route.sessionId);
       return this.toDto(route);
     } catch (err) {
       if (this.isPrismaUniqueConstraint(err)) {
@@ -203,6 +207,7 @@ export class MessageRoutesService {
     userId?: string,
   ): Promise<MessageRouteDto> {
     const route = await this.findRoute(id, userId);
+    const previousSessionId = route.sessionId;
     const data = {
       sessionId:
         body.sessionId === undefined
@@ -284,6 +289,11 @@ export class MessageRoutesService {
       throw err;
     }
 
+    this.routedGroupsCache.invalidate(previousSessionId);
+    if (updated.sessionId !== previousSessionId) {
+      this.routedGroupsCache.invalidate(updated.sessionId);
+    }
+
     return this.toDto(updated);
   }
 
@@ -298,6 +308,7 @@ export class MessageRoutesService {
       },
     });
 
+    this.routedGroupsCache.invalidate(updated.sessionId);
     return this.toDto(updated);
   }
 

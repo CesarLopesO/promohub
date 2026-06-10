@@ -6,6 +6,7 @@ import type { WAMessage } from "@whiskeysockets/baileys";
 import { MessageForwardingService } from "../../modules/routes/message-forwarding.service";
 import { ForwardSkipReason } from "../../modules/routes/forward-skip-reason";
 import { WhatsAppMessagesService } from "./whatsapp-messages.service";
+import { RoutedGroupsCacheService } from "./routed-groups-cache.service";
 
 function makeModuleRef(calls: Array<{ userId: string; messageId: string }>) {
   return {
@@ -18,6 +19,12 @@ function makeModuleRef(calls: Array<{ userId: string; messageId: string }>) {
         },
       };
     },
+  };
+}
+
+function makeRoutedGroupsCache(isRouted = true) {
+  return {
+    isRouted: async () => isRouted,
   };
 }
 
@@ -66,6 +73,7 @@ describe("WhatsAppMessagesService", () => {
     const service = new WhatsAppMessagesService(
       prisma as never,
       makeModuleRef(autoForwardCalls) as never,
+      makeRoutedGroupsCache() as never,
     );
     const message = {
       key: {
@@ -139,6 +147,7 @@ describe("WhatsAppMessagesService", () => {
     const service = new WhatsAppMessagesService(
       prisma as never,
       makeModuleRef([]) as never,
+      makeRoutedGroupsCache() as never,
     );
     const message = {
       key: {
@@ -180,6 +189,7 @@ describe("WhatsAppMessagesService", () => {
     const service = new WhatsAppMessagesService(
       prisma as never,
       makeModuleRef([]) as never,
+      makeRoutedGroupsCache() as never,
     );
     const message = {
       key: {
@@ -222,6 +232,7 @@ describe("WhatsAppMessagesService", () => {
     const service = new WhatsAppMessagesService(
       prisma as never,
       makeModuleRef(autoForwardCalls) as never,
+      makeRoutedGroupsCache() as never,
     );
     const message = {
       key: {
@@ -250,26 +261,20 @@ describe("WhatsAppMessagesService", () => {
     );
   });
 
-  it("does not call auto forward when there is no active route", async () => {
+  it("does not persist or auto forward a group without an active route", async () => {
     const autoForwardCalls: Array<{ userId: string; messageId: string }> = [];
+    let createCount = 0;
     const prisma = {
       whatsAppMessage: {
-        create: async () => ({
-          id: "saved-message-id",
-          sessionId: "session-id",
-          groupJid: "120363000000000000@g.us",
-          session: {
-            userId: "test-user",
-          },
-        }),
-      },
-      messageRoute: {
-        findFirst: async () => null,
+        create: async () => {
+          createCount += 1;
+        },
       },
     };
     const service = new WhatsAppMessagesService(
       prisma as never,
       makeModuleRef(autoForwardCalls) as never,
+      makeRoutedGroupsCache(false) as never,
     );
     const message = {
       key: {
@@ -283,22 +288,13 @@ describe("WhatsAppMessagesService", () => {
       },
     } as WAMessage;
 
-    const logs = await captureLogs(async () => {
-      await service.recordIncomingGroupMessage("session-id", message);
-      await flushAsyncWork();
-    });
+    await service.recordIncomingGroupMessage("session-id", message);
 
+    assert.equal(createCount, 0);
     assert.deepEqual(autoForwardCalls, []);
-    assert.ok(
-      logs.some(
-        (log) =>
-          log.includes("[AUTO_FORWARD] skipped") &&
-          log.includes(`reason=${ForwardSkipReason.NO_ACTIVE_ROUTES}`),
-      ),
-    );
   });
 
-  it("skips fromMe, private, reaction, and protocol messages", async () => {
+  it("skips fromMe, private, reaction, and protocol messages before saving", async () => {
     let createCount = 0;
     const service = new WhatsAppMessagesService(
       {
@@ -309,6 +305,7 @@ describe("WhatsAppMessagesService", () => {
         },
       } as never,
       makeModuleRef([]) as never,
+      makeRoutedGroupsCache() as never,
     );
     const messages = [
       {
@@ -354,7 +351,6 @@ describe("WhatsAppMessagesService", () => {
     assert.equal(createCount, 0);
     for (const reason of [
       ForwardSkipReason.FROM_ME,
-      ForwardSkipReason.PRIVATE_CHAT,
       ForwardSkipReason.REACTION,
       ForwardSkipReason.PROTOCOL,
     ]) {
@@ -379,6 +375,7 @@ describe("WhatsAppMessagesService", () => {
         },
       } as never,
       makeModuleRef([]) as never,
+      makeRoutedGroupsCache() as never,
     );
 
     await service.recordIncomingGroupMessage(
@@ -400,5 +397,80 @@ describe("WhatsAppMessagesService", () => {
     );
 
     assert.equal(storedSessionId, "wa_5032495467bb4aa09dce5c851d78672a");
+  });
+
+  it("does not save or auto forward private message content", async () => {
+    let createCount = 0;
+    let routeLookupCount = 0;
+    const autoForwardCalls: Array<{ userId: string; messageId: string }> = [];
+    const service = new WhatsAppMessagesService(
+      {
+        whatsAppMessage: {
+          create: async () => {
+            createCount += 1;
+          },
+        },
+      } as never,
+      makeModuleRef(autoForwardCalls) as never,
+      {
+        isRouted: async () => {
+          routeLookupCount += 1;
+          return true;
+        },
+      } as never,
+    );
+
+    await service.recordIncomingGroupMessage("session-id", {
+      key: {
+        remoteJid: "5511999999999@s.whatsapp.net",
+        id: "private-message",
+        fromMe: false,
+      },
+      message: {
+        conversation: "conteúdo privado https://example.com",
+      },
+    } as WAMessage);
+
+    assert.equal(createCount, 0);
+    assert.equal(routeLookupCount, 0);
+    assert.deepEqual(autoForwardCalls, []);
+  });
+
+  it("refreshes routed groups after route activation and deactivation", async () => {
+    const routes: Array<{
+      sessionId: string;
+      sourceGroupJid: string;
+      isActive: boolean;
+    }> = [];
+    const cache = new RoutedGroupsCacheService({
+      messageRoute: {
+        findMany: async ({
+          where,
+        }: {
+          where: { sessionId: string; isActive: boolean };
+        }) =>
+          routes
+            .filter(
+              (route) =>
+                route.sessionId === where.sessionId &&
+                route.isActive === where.isActive,
+            )
+            .map(({ sourceGroupJid }) => ({ sourceGroupJid })),
+      },
+    } as never);
+
+    assert.equal(await cache.isRouted("session-id", "source@g.us"), false);
+
+    routes.push({
+      sessionId: "session-id",
+      sourceGroupJid: "source@g.us",
+      isActive: true,
+    });
+    cache.invalidate("session-id");
+    assert.equal(await cache.isRouted("session-id", "source@g.us"), true);
+
+    routes[0]!.isActive = false;
+    cache.invalidate("session-id");
+    assert.equal(await cache.isRouted("session-id", "source@g.us"), false);
   });
 });

@@ -2,10 +2,12 @@ import { BadRequestException, Injectable } from "@nestjs/common";
 
 import { PrismaService } from "../../prisma.service";
 import type { PublicSettings, UpdateSettingsInput } from "./settings.types";
+import { DEFAULT_FREE_PLAN_SIGNATURE } from "./settings.types";
 
 const PUBLIC_SETTING_KEYS = [
   "supportEmail",
   "supportWhatsappUrl",
+  "freePlanSignature",
 ] as const satisfies ReadonlyArray<keyof PublicSettings>;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -35,6 +37,9 @@ export class SettingsService {
     return {
       supportEmail: values.get("supportEmail") ?? "",
       supportWhatsappUrl: values.get("supportWhatsappUrl") ?? "",
+      freePlanSignature:
+        values.get("freePlanSignature")?.trim() ||
+        DEFAULT_FREE_PLAN_SIGNATURE,
     };
   }
 
@@ -56,6 +61,13 @@ export class SettingsService {
       updates.push({
         key: "supportWhatsappUrl",
         value: this.normalizeWhatsappUrl(input.supportWhatsappUrl),
+      });
+    }
+
+    if (input.freePlanSignature !== undefined) {
+      updates.push({
+        key: "freePlanSignature",
+        value: this.normalizeFreePlanSignature(input.freePlanSignature),
       });
     }
 
@@ -129,5 +141,31 @@ export class SettingsService {
     }
 
     return whatsappUrl;
+  }
+
+  private normalizeFreePlanSignature(value: unknown): string {
+    if (typeof value !== "string") {
+      throw new BadRequestException("freePlanSignature must be a string.");
+    }
+
+    const signature = value.trim() || DEFAULT_FREE_PLAN_SIGNATURE;
+
+    if (signature.length > 300) {
+      throw new BadRequestException(
+        "freePlanSignature must have at most 300 characters.",
+      );
+    }
+
+    if (/<[^>]+>/.test(signature)) {
+      throw new BadRequestException("freePlanSignature must not contain HTML.");
+    }
+
+    if (/(?:javascript|data)\s*:/i.test(signature)) {
+      throw new BadRequestException(
+        "freePlanSignature contains an unsafe URL.",
+      );
+    }
+
+    return signature;
   }
 }

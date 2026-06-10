@@ -8,9 +8,13 @@ import { ErrorBox, LoadingBlock, PageHeader } from "@/src/components/ui-state";
 import type { SupportSettings } from "@/src/components/support-channels";
 import { apiFetch } from "@/src/lib/api";
 
+const DEFAULT_FREE_PLAN_SIGNATURE =
+  "🤖 Automatizado por PeppaBot\nAutomação de grupos de ofertas e afiliados.";
+
 export default function AdminSupportSettingsPage() {
   const [supportEmail, setSupportEmail] = useState("");
   const [supportWhatsappUrl, setSupportWhatsappUrl] = useState("");
+  const [freePlanSignature, setFreePlanSignature] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -26,6 +30,9 @@ export default function AdminSupportSettingsPage() {
         if (!cancelled) {
           setSupportEmail(result.supportEmail);
           setSupportWhatsappUrl(result.supportWhatsappUrl);
+          setFreePlanSignature(
+            result.freePlanSignature ?? DEFAULT_FREE_PLAN_SIGNATURE,
+          );
         }
       } catch (err) {
         if (!cancelled) {
@@ -61,11 +68,15 @@ export default function AdminSupportSettingsPage() {
         body: JSON.stringify({
           supportEmail,
           supportWhatsappUrl,
+          freePlanSignature,
         }),
       });
 
       setSupportEmail(result.supportEmail);
       setSupportWhatsappUrl(result.supportWhatsappUrl);
+      setFreePlanSignature(
+        result.freePlanSignature ?? DEFAULT_FREE_PLAN_SIGNATURE,
+      );
       setSaved(true);
     } catch (err) {
       setError(
@@ -116,6 +127,20 @@ export default function AdminSupportSettingsPage() {
               type="url"
               value={supportWhatsappUrl}
             />
+          </label>
+
+          <label className="mt-4 block text-sm font-medium text-slate-700">
+            Mensagem do plano FREE
+            <textarea
+              className="mt-1 min-h-28 w-full resize-y rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-950"
+              maxLength={300}
+              onChange={(event) => setFreePlanSignature(event.target.value)}
+              placeholder={DEFAULT_FREE_PLAN_SIGNATURE}
+              value={freePlanSignature}
+            />
+            <span className="mt-1 block text-xs text-slate-500">
+              {freePlanSignature.length}/300 caracteres
+            </span>
           </label>
 
           <div className="mt-6 flex flex-wrap items-center gap-3">

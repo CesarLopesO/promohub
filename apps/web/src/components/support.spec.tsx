@@ -22,6 +22,7 @@ describe("SupportChannels", () => {
   it("shows configured email with a mailto link", () => {
     const html = renderToStaticMarkup(
       <SupportChannels
+        freePlanSignature=""
         supportEmail="suporte@peppabot.com"
         supportWhatsappUrl=""
       />,
@@ -35,6 +36,7 @@ describe("SupportChannels", () => {
   it("shows configured WhatsApp with safe external link attributes", () => {
     const html = renderToStaticMarkup(
       <SupportChannels
+        freePlanSignature=""
         supportEmail=""
         supportWhatsappUrl="https://wa.me/5538999999999"
       />,
@@ -48,7 +50,11 @@ describe("SupportChannels", () => {
 
   it("hides empty channels and shows the empty state", () => {
     const html = renderToStaticMarkup(
-      <SupportChannels supportEmail="" supportWhatsappUrl="" />,
+      <SupportChannels
+        freePlanSignature=""
+        supportEmail=""
+        supportWhatsappUrl=""
+      />,
     );
 
     assert.match(html, /Nenhum canal de suporte configurado no momento\./);

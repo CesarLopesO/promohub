@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
@@ -29,6 +30,7 @@ import {
   isReactionMessage,
   messageHasMedia,
 } from "./whatsapp-message.helpers";
+import { RoutedGroupsCacheService } from "./routed-groups-cache.service";
 
 type ListMessagesQuery = {
   groupJid?: string;
@@ -39,9 +41,12 @@ type ListMessagesQuery = {
 
 @Injectable()
 export class WhatsAppMessagesService {
+  private readonly logger = new Logger(WhatsAppMessagesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly moduleRef: ModuleRef,
+    private readonly routedGroupsCache: RoutedGroupsCacheService,
   ) {}
 
   async listMessages(
@@ -111,11 +116,22 @@ export class WhatsAppMessagesService {
     const skipReason = this.readSkipReason(message);
 
     if (skipReason) {
+      if (skipReason === ForwardSkipReason.PRIVATE_CHAT) {
+        return;
+      }
+
       this.logMessageSkip(
         sessionId,
         groupJid ?? undefined,
         messageId ?? undefined,
         skipReason,
+      );
+      return;
+    }
+
+    if (!(await this.routedGroupsCache.isRouted(sessionId, groupJid!))) {
+      this.logger.debug(
+        `[WA_MESSAGE] ignored reason=${ForwardSkipReason.GROUP_NOT_ROUTED}`,
       );
       return;
     }
@@ -148,7 +164,7 @@ export class WhatsAppMessagesService {
       });
 
       if (links.length > 0) {
-        this.runAutoForwardIfRouteExists(
+        this.runAutoForward(
           savedMessage.session.userId,
           savedMessage.id,
           savedMessage.sessionId,
@@ -216,33 +232,15 @@ export class WhatsAppMessagesService {
     return undefined;
   }
 
-  private runAutoForwardIfRouteExists(
+  private runAutoForward(
     userId: string,
     messageId: string,
     sessionId: string,
     sourceGroupJid: string,
   ): void {
-    void this.prisma.messageRoute
-      .findFirst({
-        where: {
-          userId,
-          sessionId,
-          sourceGroupJid,
-          isActive: true,
-        },
-      })
-      .then((route) => {
-        if (!route) {
-          console.log(
-            `[AUTO_FORWARD] skipped sessionId=${sessionId} sourceGroupJid=${sourceGroupJid} messageId=${messageId} reason=${ForwardSkipReason.NO_ACTIVE_ROUTES}`,
-          );
-          return undefined;
-        }
-
-        return this.moduleRef
-          .get(MessageForwardingService, { strict: false })
-          .forwardMessageById(userId, messageId, { mode: "auto" });
-      })
+    void this.moduleRef
+      .get(MessageForwardingService, { strict: false })
+      .forwardMessageById(userId, messageId, { mode: "auto" })
       .catch(() => {
         console.log(
           `[AUTO_FORWARD] failed sessionId=${sessionId} sourceGroupJid=${sourceGroupJid} messageId=${messageId} reason=${ForwardSkipReason.SEND_FAILED}`,

@@ -5,6 +5,7 @@ import { Button } from "@promohub/ui/button";
 export type SupportSettings = {
   supportEmail: string;
   supportWhatsappUrl: string;
+  freePlanSignature: string;
 };
 
 export function SupportChannels({

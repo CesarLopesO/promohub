@@ -12,7 +12,8 @@ import { ForwardSkipReason } from "./forward-skip-reason";
 import { MessageForwardingService } from "./message-forwarding.service";
 import { MessageRoutesService } from "./message-routes.service";
 
-const FREE_PLAN_SIGNATURE = "🤖 Automatizado por PeppaBot";
+const FREE_PLAN_SIGNATURE =
+  "🤖 Automatizado por PeppaBot\nAutomação de grupos de ofertas e afiliados.";
 
 type StoredMessage = {
   id: string;
@@ -101,6 +102,7 @@ function makeService(options?: {
   sendMessageResult?: unknown;
   generatedInviteUrls?: Record<string, string | null>;
   userPlan?: Plan;
+  freePlanSignature?: string;
   planLimitError?: ForbiddenException;
 }) {
   const routes = [...(options?.routes ?? [])];
@@ -318,19 +320,39 @@ function makeService(options?: {
       );
     },
   };
-  const forwardingService = new MessageForwardingService(
-    prisma as never,
-    linkRewriter as never,
-    sessionManager as never,
-    inviteService as never,
-  );
   const planLimits = {
+    getLimits: (plan: Plan) => ({
+      adsEnabled: plan === Plan.FREE,
+    }),
     assertCanCreateRoute: async () => {
       if (options?.planLimitError) {
         throw options.planLimitError;
       }
     },
   };
+  const routedGroupsCache = {
+    invalidatedSessionIds: [] as string[],
+    invalidate(sessionId: string) {
+      this.invalidatedSessionIds.push(sessionId);
+    },
+  };
+  const forwardingService = new MessageForwardingService(
+    prisma as never,
+    linkRewriter as never,
+    sessionManager as never,
+    inviteService as never,
+    {
+      getPublicSettings: async () => ({
+        supportEmail: "",
+        supportWhatsappUrl: "",
+        freePlanSignature:
+          options?.freePlanSignature === undefined
+            ? FREE_PLAN_SIGNATURE
+            : options.freePlanSignature,
+      }),
+    } as never,
+    planLimits as never,
+  );
 
   return {
     service: new MessageRoutesService(
@@ -339,17 +361,19 @@ function makeService(options?: {
       forwardingService,
       planLimits as never,
       inviteService as never,
+      routedGroupsCache as never,
     ),
     forwardingService,
     forwarded,
     sentMessages,
     inviteCalls,
+    routedGroupsCache,
   };
 }
 
 describe("MessageRoutesService", () => {
   it("creates a route", async () => {
-    const { service } = makeService();
+    const { service, routedGroupsCache } = makeService();
 
     const route = await service.create({
       userId: "test-user",
@@ -365,6 +389,7 @@ describe("MessageRoutesService", () => {
       route.destinationInviteUrl,
       "https://chat.whatsapp.com/DESTINO",
     );
+    assert.deepEqual(routedGroupsCache.invalidatedSessionIds, ["wa_xxx"]);
   });
 
   it("blocks an exact active duplicate route", async () => {
@@ -520,11 +545,14 @@ describe("MessageRoutesService", () => {
   });
 
   it("soft deletes a route", async () => {
-    const { service } = makeService({ routes: [makeRoute()] });
+    const { service, routedGroupsCache } = makeService({
+      routes: [makeRoute()],
+    });
 
     const route = await service.softDelete("route-id");
 
     assert.equal(route.isActive, false);
+    assert.deepEqual(routedGroupsCache.invalidatedSessionIds, ["wa_xxx"]);
   });
 
   it("previews without active routes", async () => {
@@ -803,6 +831,33 @@ describe("MessageRoutesService", () => {
       expected,
     );
     assert.equal(forwarded[0]?.rewrittenText, expected);
+  });
+
+  it("uses a custom promotional signature for FREE users", async () => {
+    const customSignature =
+      "🔥 Criado com PeppaBot\nhttps://peppabot.com/automacao";
+    const { forwardingService, sentMessages } = makeService({
+      userPlan: Plan.FREE,
+      freePlanSignature: customSignature,
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://amzn.to/abc",
+          links: ["https://amzn.to/abc"],
+        },
+      ],
+      rewrittenText: "Oferta customizada",
+    });
+
+    await forwardingService.forwardMessageById("test-user", "message-id");
+
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      `Oferta customizada\n\n${customSignature}`,
+    );
   });
 
   it("does not add the promotional signature for BASIC users", async () => {

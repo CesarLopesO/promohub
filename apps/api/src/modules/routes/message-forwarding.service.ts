@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { Plan, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 
 import { AffiliateLinkRewriterService } from "../affiliate/affiliate-link-rewriter.service";
 import { Marketplace } from "../affiliate/helpers/detect-marketplace";
@@ -19,13 +19,15 @@ import {
   ForwardSkipReason,
   type ForwardSkipReason as ForwardSkipReasonValue,
 } from "./forward-skip-reason";
+import { SettingsService } from "../settings/settings.service";
+import { DEFAULT_FREE_PLAN_SIGNATURE } from "../settings/settings.types";
+import { PlanLimitsService } from "../plans/plan-limits.service";
 
 const FORWARDED_STATUS_SENT = "SENT";
 const FORWARDED_STATUS_SENT_TEXT_FALLBACK = "SENT_TEXT_FALLBACK";
 const FORWARDED_STATUS_FAILED = "FAILED";
 const FORWARDED_STATUS_SKIPPED = "SKIPPED";
 const FORWARDED_STATUS_SKIPPED_ALREADY_SENT = "SKIPPED_ALREADY_SENT";
-const FREE_PLAN_SIGNATURE = "🤖 Automatizado por PeppaBot";
 
 type ForwardMode = "manual" | "auto";
 
@@ -55,6 +57,8 @@ export class MessageForwardingService {
     private readonly linkRewriter: AffiliateLinkRewriterService,
     private readonly sessionManager: WhatsAppSessionManager,
     private readonly inviteService: WhatsAppInviteService,
+    private readonly settings: SettingsService,
+    private readonly planLimits: PlanLimitsService,
   ) {}
 
   async forwardMessageById(
@@ -270,6 +274,10 @@ export class MessageForwardingService {
 
     const { socket } = await this.sessionManager.getConnectedSocket(session.id);
     const results: ForwardMessageResultDto[] = [];
+    const adsEnabled = this.planLimits.getLimits(user.plan).adsEnabled;
+    const freePlanSignature = adsEnabled
+      ? (await this.settings.getPublicSettings()).freePlanSignature
+      : DEFAULT_FREE_PLAN_SIGNATURE;
 
     for (const route of routes) {
       const destinationGroupJid = route.destinationGroupJid;
@@ -287,7 +295,8 @@ export class MessageForwardingService {
       );
       const rewrittenText = this.appendFreePlanSignature(
         whatsappRewrite.text,
-        user.plan,
+        adsEnabled,
+        freePlanSignature,
       );
       const warnings =
         whatsappLinks.length > 0 && !destinationInviteUrl
@@ -507,12 +516,16 @@ export class MessageForwardingService {
     return value.filter((link): link is string => typeof link === "string");
   }
 
-  private appendFreePlanSignature(text: string, plan: Plan): string {
-    if (plan !== Plan.FREE || text.includes(FREE_PLAN_SIGNATURE)) {
+  private appendFreePlanSignature(
+    text: string,
+    adsEnabled: boolean,
+    signature: string,
+  ): string {
+    if (!adsEnabled || text.includes(signature)) {
       return text;
     }
 
-    return `${text}\n\n${FREE_PLAN_SIGNATURE}`;
+    return `${text}\n\n${signature}`;
   }
 
   private async sendForwardedMessage(
