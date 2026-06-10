@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PROMOHUB",
-  description: "Automacao para afiliados Amazon e Mercado Livre",
+  title: "PeppaBot",
+  description: "Automação de grupos de ofertas e afiliados para WhatsApp.",
 };
 
 export default function RootLayout({

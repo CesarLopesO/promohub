@@ -264,7 +264,7 @@ export default function RoutesPage() {
                         value={inviteDrafts[route.id] ?? ""}
                       />
                       <span className="mt-1 block text-xs font-normal text-slate-500">
-                        Opcional. Se vazio, o Promohub tenta gerar
+                        Opcional. Se vazio, o PeppaBot tenta gerar
                         automaticamente o link de convite do grupo destino. O
                         WhatsApp conectado precisa ser admin do grupo.
                       </span>

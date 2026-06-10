@@ -44,11 +44,14 @@ export default function RegisterPage() {
       <section className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
         <div>
           <p className="text-sm font-semibold uppercase text-slate-500">
-            Promohub
+            PeppaBot
           </p>
           <h1 className="mt-2 text-2xl font-semibold text-slate-950">
             Criar usuario
           </h1>
+          <p className="mt-2 text-sm text-slate-600">
+            Automação de grupos de ofertas e afiliados.
+          </p>
         </div>
 
         <form className="mt-6 space-y-4" onSubmit={onSubmit}>

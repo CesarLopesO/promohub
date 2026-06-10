@@ -102,7 +102,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
               <div>
                 <p className="text-sm font-semibold uppercase text-slate-950">
-                  Promohub
+                  PeppaBot
                 </p>
                 <p className="mt-1 text-xs text-slate-500">Menu</p>
               </div>
@@ -143,7 +143,7 @@ function SidebarContent({
     <>
       <div className="border-b border-slate-200 px-6 py-5">
         <p className="text-sm font-semibold uppercase text-slate-950">
-          Promohub
+          PeppaBot
         </p>
         <p className="mt-1 text-xs text-slate-500">User Dashboard</p>
       </div>

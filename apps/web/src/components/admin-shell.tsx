@@ -70,7 +70,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       <aside className="sidebar">
         <div className="border-b border-slate-200 px-6 py-5">
           <p className="text-sm font-semibold uppercase text-slate-950">
-            Promohub Admin
+            PeppaBot Admin
           </p>
           <p className="mt-1 text-xs text-slate-500">{user.email}</p>
         </div>
@@ -120,7 +120,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             <p className="truncate text-sm font-medium text-slate-950">
               Admin
             </p>
-            <p className="text-xs text-slate-500">Operação Promohub</p>
+            <p className="text-xs text-slate-500">Operação PeppaBot</p>
           </div>
           <ThemeToggle />
         </header>

@@ -35,6 +35,7 @@ const plans = [
   {
     name: "FREE",
     price: "R$ 0",
+    description: "Comece grátis com automação básica.",
     features: [
       "1 sessão WhatsApp",
       "Até 3 rotas",
@@ -49,6 +50,7 @@ const plans = [
     price: "R$ 79,90",
     period: "/mês",
     badge: "Mais popular",
+    description: "Para operações em crescimento sem propaganda.",
     features: [
       "2 sessões WhatsApp",
       "Até 20 rotas",
@@ -64,6 +66,7 @@ const plans = [
     period: "/mês",
     badge: "Mais completo",
     featured: true,
+    description: "Para operação profissional com múltiplos WhatsApps.",
     features: [
       "5 sessões WhatsApp",
       "Rotas ilimitadas",
@@ -224,6 +227,9 @@ export default function Home() {
                     </span>
                   ) : null}
                 </div>
+                <p className="mt-4 text-sm leading-6 text-zinc-400">
+                  {plan.description}
+                </p>
 
                 <div className="my-6 h-px bg-zinc-800" />
 

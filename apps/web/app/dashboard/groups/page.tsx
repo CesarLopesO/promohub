@@ -298,7 +298,7 @@ export default function GroupsPage() {
         <div className="mt-6 space-y-6">
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
             Use grupos de origem onde chegam promocoes e grupos de destino onde
-            o Promohub vai repostar.
+            o PeppaBot vai repostar.
           </div>
 
           <section className="grid gap-3 md:grid-cols-5">
@@ -427,7 +427,7 @@ export default function GroupsPage() {
                 value={form.destinationInviteUrl}
               />
               <span className="mt-1 block text-xs font-normal text-slate-500">
-                Opcional. Se vazio, o Promohub tenta gerar automaticamente o
+                Opcional. Se vazio, o PeppaBot tenta gerar automaticamente o
                 link de convite do grupo destino. O WhatsApp conectado precisa
                 ser admin do grupo.
               </span>
