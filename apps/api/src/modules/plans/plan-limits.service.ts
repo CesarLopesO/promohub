@@ -6,13 +6,15 @@ import {
 import { Plan } from "@prisma/client";
 
 import { PrismaService } from "../../prisma.service";
+import { getSaoPauloDayBounds } from "../../common/time/sao-paulo-day";
 import { ForwardSkipReason } from "../routes/forward-skip-reason";
 
-type PlanLimits = {
+export type PlanLimits = {
   maxWhatsAppSessions: number;
   maxSourceGroups: number | null;
   maxDestinationGroups: number | null;
   adsEnabled: boolean;
+  dailyForwardLimit: number | null;
 };
 
 type PlanUsage = {
@@ -20,6 +22,8 @@ type PlanUsage = {
   sourceGroups: number;
   destinationGroups: number;
   activeRoutes: number;
+  forwardsToday: number;
+  dailyForwardRemaining: number | null;
 };
 
 type ActiveRouteGroups = {
@@ -41,18 +45,21 @@ const PLAN_LIMITS: Record<Plan, PlanLimits> = {
     maxSourceGroups: 3,
     maxDestinationGroups: 1,
     adsEnabled: true,
+    dailyForwardLimit: 100,
   },
   BASIC: {
     maxWhatsAppSessions: 1,
     maxSourceGroups: 10,
     maxDestinationGroups: 5,
     adsEnabled: false,
+    dailyForwardLimit: null,
   },
   PRO: {
     maxWhatsAppSessions: 5,
     maxSourceGroups: null,
     maxDestinationGroups: null,
     adsEnabled: false,
+    dailyForwardLimit: null,
   },
 };
 
@@ -74,7 +81,8 @@ export class PlanLimitsService {
       throw new NotFoundException("User not found.");
     }
 
-    const [whatsappSessions, activeRoutes, sourceGroups, destinationGroups] =
+    const limits = this.getLimits(user.plan);
+    const [whatsappSessions, activeRoutes, sourceGroups, destinationGroups, forwardsToday] =
       await Promise.all([
         this.prisma.whatsAppSession.count({
           where: { userId, deletedAt: null },
@@ -92,18 +100,55 @@ export class PlanLimitsService {
           distinct: ["destinationGroupJid"],
           select: { destinationGroupJid: true },
         }),
+        this.countForwardsToday(userId),
       ]);
 
     return {
       plan: user.plan,
-      limits: this.getLimits(user.plan),
+      limits,
       usage: {
         whatsappSessions,
         sourceGroups: sourceGroups.length,
         destinationGroups: destinationGroups.length,
         activeRoutes,
+        forwardsToday,
+        dailyForwardRemaining:
+          limits.dailyForwardLimit === null
+            ? null
+            : Math.max(limits.dailyForwardLimit - forwardsToday, 0),
       },
     };
+  }
+
+  async canForwardMessage(
+    userId: string,
+    plan: Plan,
+    now = new Date(),
+  ): Promise<boolean> {
+    const limit = this.getLimits(plan).dailyForwardLimit;
+
+    if (limit === null) {
+      return true;
+    }
+
+    return (await this.countForwardsToday(userId, now)) < limit;
+  }
+
+  async countForwardsToday(userId: string, now = new Date()): Promise<number> {
+    const { start, end } = getSaoPauloDayBounds(now);
+
+    return this.prisma.forwardedMessage.count({
+      where: {
+        userId,
+        status: {
+          in: ["SENT", "SENT_TEXT_FALLBACK"],
+        },
+        sentAt: {
+          gte: start,
+          lt: end,
+        },
+      },
+    });
   }
 
   async assertCanCreateWhatsAppSession(userId: string): Promise<void> {

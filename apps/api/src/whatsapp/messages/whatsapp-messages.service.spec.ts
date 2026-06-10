@@ -49,6 +49,95 @@ async function captureLogs(work: () => Promise<void>): Promise<string[]> {
 }
 
 describe("WhatsAppMessagesService", () => {
+  it("skips an old WhatsApp message without saving or forwarding it", async () => {
+    let createCount = 0;
+    let routeCheckCount = 0;
+    const autoForwardCalls: Array<{ userId: string; messageId: string }> = [];
+    const service = new WhatsAppMessagesService(
+      {
+        whatsAppMessage: {
+          create: async () => {
+            createCount += 1;
+          },
+        },
+      } as never,
+      makeModuleRef(autoForwardCalls) as never,
+      {
+        isRouted: async () => {
+          routeCheckCount += 1;
+          return true;
+        },
+      } as never,
+      {
+        get: () => "30",
+      } as never,
+    );
+    const message = {
+      key: {
+        remoteJid: "120363000000000000@g.us",
+        id: "old-message",
+        fromMe: false,
+      },
+      messageTimestamp: Math.floor(Date.now() / 1000) - 31 * 60,
+      message: {
+        imageMessage: {
+          caption: "Oferta https://amzn.to/segredo",
+        },
+      },
+    } as WAMessage;
+
+    const logs = await captureLogs(() =>
+      service.recordIncomingGroupMessage("session-id", message),
+    );
+
+    assert.equal(createCount, 0);
+    assert.equal(routeCheckCount, 0);
+    assert.deepEqual(autoForwardCalls, []);
+    assert.ok(
+      logs.some((log) => log.includes(`reason=${ForwardSkipReason.MESSAGE_TOO_OLD}`)),
+    );
+    assert.ok(logs.every((log) => !log.includes("amzn.to/segredo")));
+  });
+
+  it("disables old-message protection when the env is zero", async () => {
+    let createCount = 0;
+    const service = new WhatsAppMessagesService(
+      {
+        whatsAppMessage: {
+          create: async () => {
+            createCount += 1;
+            return {
+              id: "saved-message-id",
+              sessionId: "session-id",
+              groupJid: "120363000000000000@g.us",
+              session: { userId: "test-user" },
+            };
+          },
+        },
+      } as never,
+      makeModuleRef([]) as never,
+      makeRoutedGroupsCache() as never,
+      {
+        get: () => "0",
+      } as never,
+    );
+    const message = {
+      key: {
+        remoteJid: "120363000000000000@g.us",
+        id: "old-message",
+        fromMe: false,
+      },
+      messageTimestamp: Math.floor(Date.now() / 1000) - 24 * 60 * 60,
+      message: {
+        conversation: "Mensagem antiga sem link",
+      },
+    } as WAMessage;
+
+    await service.recordIncomingGroupMessage("session-id", message);
+
+    assert.equal(createCount, 1);
+  });
+
   it("persists links extracted from a Baileys image caption", async () => {
     let createData: unknown;
     const prisma = {

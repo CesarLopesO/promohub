@@ -32,7 +32,33 @@ function makeController() {
       };
     },
   };
-  const controller = new BillingController(billing as never, {} as never);
+  const planLimits = {
+    getUsage: async (userId: string) => {
+      calls.push({ method: "usage", value: userId });
+      return {
+        plan: Plan.FREE,
+        limits: {
+          maxWhatsAppSessions: 1,
+          maxSourceGroups: 3,
+          maxDestinationGroups: 1,
+          adsEnabled: true,
+          dailyForwardLimit: 100,
+        },
+        usage: {
+          whatsappSessions: 1,
+          sourceGroups: 2,
+          destinationGroups: 1,
+          activeRoutes: 2,
+          forwardsToday: 80,
+          dailyForwardRemaining: 20,
+        },
+      };
+    },
+  };
+  const controller = new BillingController(
+    billing as never,
+    planLimits as never,
+  );
   const request = { user: { id: "user-1" } } as never;
 
   return { controller, request, calls };
@@ -79,6 +105,20 @@ describe("BillingController", () => {
     assert.deepEqual(result, {
       plan: Plan.FREE,
       status: SubscriptionStatus.CANCELED,
+    });
+  });
+
+  it("returns daily forwarding fields from GET /billing/usage", async () => {
+    const { controller, request, calls } = makeController();
+
+    const result = await controller.usage(request);
+
+    assert.equal(result.limits.dailyForwardLimit, 100);
+    assert.equal(result.usage.forwardsToday, 80);
+    assert.equal(result.usage.dailyForwardRemaining, 20);
+    assert.deepEqual(calls.at(-1), {
+      method: "usage",
+      value: "user-1",
     });
   });
 });

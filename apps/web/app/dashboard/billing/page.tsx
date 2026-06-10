@@ -34,12 +34,15 @@ type PlanUsage = {
     maxSourceGroups: number | null;
     maxDestinationGroups: number | null;
     adsEnabled: boolean;
+    dailyForwardLimit: number | null;
   };
   usage: {
     whatsappSessions: number;
     sourceGroups: number;
     destinationGroups: number;
     activeRoutes: number;
+    forwardsToday: number;
+    dailyForwardRemaining: number | null;
   };
 };
 

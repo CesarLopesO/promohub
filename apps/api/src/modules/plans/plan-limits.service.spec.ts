@@ -26,10 +26,16 @@ function makeService(options: {
   plan: Plan;
   sessions?: StoredSession[];
   routes?: StoredRoute[];
+  forwards?: Array<{
+    userId: string;
+    status: string;
+    sentAt: Date | null;
+  }>;
 }) {
   const users: StoredUser[] = [{ id: "user-1", plan: options.plan }];
   const sessions = options.sessions ?? [];
   const routes = options.routes ?? [];
+  const forwards = options.forwards ?? [];
   const prisma = {
     user: {
       findUnique: async ({ where }: { where: { id: string } }) =>
@@ -115,6 +121,25 @@ function makeService(options: {
             (where.destinationGroupJid === undefined ||
               route.destinationGroupJid === where.destinationGroupJid),
         ) ?? null,
+    },
+    forwardedMessage: {
+      count: async ({
+        where,
+      }: {
+        where: {
+          userId: string;
+          status: { in: string[] };
+          sentAt: { gte: Date; lt: Date };
+        };
+      }) =>
+        forwards.filter(
+          (forward) =>
+            forward.userId === where.userId &&
+            where.status.in.includes(forward.status) &&
+            forward.sentAt !== null &&
+            forward.sentAt >= where.sentAt.gte &&
+            forward.sentAt < where.sentAt.lt,
+        ).length,
     },
   };
 
@@ -296,5 +321,57 @@ describe("PlanLimitsService", () => {
     assert.equal(usage.usage.sourceGroups, 2);
     assert.equal(usage.usage.destinationGroups, 2);
     assert.equal(usage.usage.activeRoutes, 2);
+    assert.equal(usage.limits.dailyForwardLimit, null);
+    assert.equal(usage.usage.forwardsToday, 0);
+    assert.equal(usage.usage.dailyForwardRemaining, null);
+  });
+
+  it("counts only successful forwards from today in America/Sao_Paulo", async () => {
+    const service = makeService({
+      plan: Plan.FREE,
+      forwards: [
+        {
+          userId: "user-1",
+          status: "SENT",
+          sentAt: new Date("2026-06-10T03:00:00.000Z"),
+        },
+        {
+          userId: "user-1",
+          status: "SENT_TEXT_FALLBACK",
+          sentAt: new Date("2026-06-11T02:59:59.999Z"),
+        },
+        {
+          userId: "user-1",
+          status: "SENT",
+          sentAt: new Date("2026-06-10T02:59:59.999Z"),
+        },
+        {
+          userId: "user-1",
+          status: "FAILED",
+          sentAt: new Date("2026-06-10T12:00:00.000Z"),
+        },
+      ],
+    });
+
+    const count = await service.countForwardsToday(
+      "user-1",
+      new Date("2026-06-10T15:00:00.000Z"),
+    );
+
+    assert.equal(count, 2);
+  });
+
+  it("returns FREE daily limit and remaining usage", async () => {
+    const forwards = Array.from({ length: 99 }, () => ({
+      userId: "user-1",
+      status: "SENT",
+      sentAt: new Date("2026-06-10T12:00:00.000Z"),
+    }));
+    const service = makeService({ plan: Plan.FREE, forwards });
+    const usage = await service.getUsage("user-1");
+
+    assert.equal(usage.limits.dailyForwardLimit, 100);
+    assert.equal(usage.usage.forwardsToday, 99);
+    assert.equal(usage.usage.dailyForwardRemaining, 1);
   });
 });

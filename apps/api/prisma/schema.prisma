@@ -382,4 +382,5 @@ model ForwardedMessage {
   @@index([status])
   @@index([reason])
   @@index([createdAt])
+  @@index([userId, status, sentAt])
 }

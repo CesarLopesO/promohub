@@ -5,6 +5,10 @@ import Link from "next/link";
 import { CheckCircle2, Circle } from "lucide-react";
 
 import { PageHeader, ErrorBox, LoadingBlock } from "@/src/components/ui-state";
+import {
+  DailyForwardUsageCard,
+  type DailyForwardUsage,
+} from "@/src/components/daily-forward-usage-card";
 import { apiFetch } from "@/src/lib/api";
 
 type MonitoringStats = {
@@ -60,6 +64,7 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<MonitoringStats | null>(null);
   const [activity, setActivity] = useState<RecentActivity | null>(null);
   const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [planUsage, setPlanUsage] = useState<DailyForwardUsage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,16 +73,19 @@ export default function DashboardPage() {
 
     async function load() {
       try {
-        const [statsResult, activityResult, credentialResult] = await Promise.all([
-          apiFetch<MonitoringStats>("/monitoring/stats"),
-          apiFetch<RecentActivity>("/monitoring/recent-activity"),
-          apiFetch<Credential[]>("/affiliate/credentials"),
-        ]);
+        const [statsResult, activityResult, credentialResult, usageResult] =
+          await Promise.all([
+            apiFetch<MonitoringStats>("/monitoring/stats"),
+            apiFetch<RecentActivity>("/monitoring/recent-activity"),
+            apiFetch<Credential[]>("/affiliate/credentials"),
+            apiFetch<DailyForwardUsage>("/billing/usage"),
+          ]);
 
         if (!cancelled) {
           setStats(statsResult);
           setActivity(activityResult);
           setCredentials(credentialResult);
+          setPlanUsage(usageResult);
         }
       } catch (err) {
         if (!cancelled) {
@@ -151,6 +159,8 @@ export default function DashboardPage() {
         title="Visao geral"
         description="Acompanhe WhatsApp, rotas, mensagens e envios."
       />
+
+      {planUsage ? <DailyForwardUsageCard usage={planUsage} /> : null}
 
       <section className="mb-6 rounded-lg border border-slate-200 bg-white p-5">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">

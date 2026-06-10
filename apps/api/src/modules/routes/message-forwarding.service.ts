@@ -136,6 +136,27 @@ export class MessageForwardingService {
       return this.toForwardResponse(message.id, []);
     }
 
+    if (
+      !(await this.planLimits.canForwardMessage(
+        normalizedUserId,
+        user.plan,
+      ))
+    ) {
+      this.logSkippedForRoutes(
+        message,
+        routes,
+        ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED,
+      );
+      return this.persistSkippedForRoutes({
+        userId: normalizedUserId,
+        message,
+        routes,
+        mode,
+        rewrittenText: message.text ?? "",
+        reason: ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED,
+      });
+    }
+
     const rewritePreview = await this.linkRewriter.rewriteMessageForUser(
       normalizedUserId,
       message.id,
@@ -281,6 +302,46 @@ export class MessageForwardingService {
 
     for (const route of routes) {
       const destinationGroupJid = route.destinationGroupJid;
+
+      if (
+        !(await this.planLimits.canForwardMessage(
+          normalizedUserId,
+          user.plan,
+        ))
+      ) {
+        this.logOperational("MESSAGE_FORWARD", "skipped", {
+          sessionId: message.sessionId,
+          sourceGroupJid: message.groupJid,
+          destinationGroupJid,
+          messageId: message.id,
+          reason: ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED,
+        });
+        await this.prisma.forwardedMessage.create({
+          data: {
+            userId: normalizedUserId,
+            sessionId: message.sessionId,
+            sourceMessageId: message.id,
+            sourceGroupJid: message.groupJid,
+            destinationGroupJid,
+            originalText: message.text,
+            rewrittenText: affiliateRewrittenText,
+            status: FORWARDED_STATUS_SKIPPED,
+            mode: this.toStoredMode(mode),
+            mediaForwarded: false,
+            reason: ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED,
+            error: ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED,
+          },
+        });
+        results.push({
+          destinationGroupJid,
+          status: FORWARDED_STATUS_SKIPPED,
+          mediaForwarded: false,
+          reason: ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED,
+          error: ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED,
+        });
+        continue;
+      }
+
       const destinationInviteUrl =
         whatsappLinks.length > 0
           ? await this.inviteService.getDestinationInviteUrl(

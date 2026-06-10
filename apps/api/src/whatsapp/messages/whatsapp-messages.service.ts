@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
+import { ConfigService } from "@nestjs/config";
 import { Prisma } from "@prisma/client";
 import type { WAMessage } from "@whiskeysockets/baileys";
 
@@ -47,6 +48,9 @@ export class WhatsAppMessagesService {
     private readonly prisma: PrismaService,
     private readonly moduleRef: ModuleRef,
     private readonly routedGroupsCache: RoutedGroupsCacheService,
+    private readonly config: ConfigService = {
+      get: () => undefined,
+    } as unknown as ConfigService,
   ) {}
 
   async listMessages(
@@ -125,6 +129,16 @@ export class WhatsAppMessagesService {
         groupJid ?? undefined,
         messageId ?? undefined,
         skipReason,
+      );
+      return;
+    }
+
+    if (this.isMessageTooOld(message)) {
+      this.logMessageSkip(
+        sessionId,
+        groupJid ?? undefined,
+        messageId ?? undefined,
+        ForwardSkipReason.MESSAGE_TOO_OLD,
       );
       return;
     }
@@ -230,6 +244,46 @@ export class WhatsAppMessagesService {
     }
 
     return undefined;
+  }
+
+  private isMessageTooOld(message: WAMessage): boolean {
+    const configuredValue = this.config.get<string>(
+      "FORWARD_MAX_MESSAGE_AGE_MINUTES",
+    );
+
+    if (configuredValue === undefined || configuredValue.trim() === "") {
+      return false;
+    }
+
+    const maxAgeMinutes = Number(configuredValue);
+
+    if (!Number.isFinite(maxAgeMinutes) || maxAgeMinutes <= 0) {
+      return false;
+    }
+
+    const timestamp = this.readMessageTimestamp(message.messageTimestamp);
+
+    if (timestamp === null) {
+      return false;
+    }
+
+    return Date.now() - timestamp > maxAgeMinutes * 60_000;
+  }
+
+  private readMessageTimestamp(value: unknown): number | null {
+    const seconds =
+      typeof value === "number"
+        ? value
+        : typeof value === "bigint"
+          ? Number(value)
+          : typeof value === "object" &&
+              value !== null &&
+              "toNumber" in value &&
+              typeof value.toNumber === "function"
+            ? value.toNumber()
+            : Number(value);
+
+    return Number.isFinite(seconds) ? seconds * 1_000 : null;
   }
 
   private runAutoForward(

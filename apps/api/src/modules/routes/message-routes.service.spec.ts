@@ -104,6 +104,8 @@ function makeService(options?: {
   userPlan?: Plan;
   freePlanSignature?: string;
   planLimitError?: ForbiddenException;
+  forwardsToday?: number;
+  dailyForwardLimit?: number | null;
 }) {
   const routes = [...(options?.routes ?? [])];
   const messages = options?.messages ?? [];
@@ -112,6 +114,7 @@ function makeService(options?: {
     jid: string;
     content: unknown;
   }> = [];
+  let rewriteCallCount = 0;
   const prisma = {
     user: {
       findUnique: async () => ({
@@ -243,6 +246,7 @@ function makeService(options?: {
   };
   const linkRewriter = {
     rewriteMessageForUser: async (_userId: string, messageId: string) => {
+      rewriteCallCount += 1;
       const message = messages.find((item) => item.id === messageId);
       const isMercadoLivre =
         options?.rewriteMarketplace === Marketplace.MERCADO_LIVRE;
@@ -323,7 +327,30 @@ function makeService(options?: {
   const planLimits = {
     getLimits: (plan: Plan) => ({
       adsEnabled: plan === Plan.FREE,
+      dailyForwardLimit:
+        options?.dailyForwardLimit === undefined
+          ? plan === Plan.FREE
+            ? 100
+            : null
+          : options.dailyForwardLimit,
     }),
+    canForwardMessage: async (_userId: string, plan: Plan) => {
+      const limit =
+        options?.dailyForwardLimit === undefined
+          ? plan === Plan.FREE
+            ? 100
+            : null
+          : options.dailyForwardLimit;
+      const sentDuringTest = forwarded.filter(
+        (message) =>
+          message.status === "SENT" ||
+          message.status === "SENT_TEXT_FALLBACK",
+      ).length;
+
+      return limit === null
+        ? true
+        : (options?.forwardsToday ?? 0) + sentDuringTest < limit;
+    },
     assertCanCreateRoute: async () => {
       if (options?.planLimitError) {
         throw options.planLimitError;
@@ -368,6 +395,7 @@ function makeService(options?: {
     sentMessages,
     inviteCalls,
     routedGroupsCache,
+    getRewriteCallCount: () => rewriteCallCount,
   };
 }
 
@@ -831,6 +859,139 @@ describe("MessageRoutesService", () => {
       expected,
     );
     assert.equal(forwarded[0]?.rewrittenText, expected);
+  });
+
+  it("FREE with 99 forwards allows one more destination", async () => {
+    const { forwardingService, sentMessages } = makeService({
+      userPlan: Plan.FREE,
+      forwardsToday: 99,
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://amzn.to/abc",
+          links: ["https://amzn.to/abc"],
+        },
+      ],
+      rewrittenText: "Oferta afiliada",
+    });
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+    );
+
+    assert.equal(response.sentCount, 1);
+    assert.equal(sentMessages.length, 1);
+  });
+
+  it("FREE with 100 forwards blocks before affiliate and media processing", async () => {
+    const {
+      forwardingService,
+      forwarded,
+      sentMessages,
+      getRewriteCallCount,
+    } = makeService({
+      userPlan: Plan.FREE,
+      forwardsToday: 100,
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://amzn.to/abc",
+          links: ["https://amzn.to/abc"],
+          messageType: "image",
+          hasMedia: true,
+          rawMessage: { message: { imageMessage: {} } },
+        },
+      ],
+    });
+
+    const { logs, result } = await captureLogs(() =>
+      forwardingService.forwardMessageById("test-user", "message-id"),
+    );
+
+    assert.equal(result.sentCount, 0);
+    assert.equal(result.skippedCount, 1);
+    assert.equal(getRewriteCallCount(), 0);
+    assert.deepEqual(sentMessages, []);
+    assert.equal(
+      forwarded[0]?.reason,
+      ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED,
+    );
+    assert.ok(
+      logs.some((log) =>
+        log.includes(
+          `reason=${ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED}`,
+        ),
+      ),
+    );
+  });
+
+  it("BASIC and PRO do not block daily forwarding", async () => {
+    for (const plan of [Plan.BASIC, Plan.PRO]) {
+      const { forwardingService, sentMessages } = makeService({
+        userPlan: plan,
+        forwardsToday: 1000,
+        routes: [makeRoute()],
+        messages: [
+          {
+            id: "message-id",
+            sessionId: "wa_xxx",
+            groupJid: "source@g.us",
+            text: "Oferta https://amzn.to/abc",
+            links: ["https://amzn.to/abc"],
+          },
+        ],
+        rewrittenText: "Oferta afiliada",
+      });
+
+      const response = await forwardingService.forwardMessageById(
+        "test-user",
+        "message-id",
+      );
+
+      assert.equal(response.sentCount, 1);
+      assert.equal(sentMessages.length, 1);
+    }
+  });
+
+  it("counts successful forwarding per destination and stops at the FREE limit", async () => {
+    const { forwardingService, forwarded, sentMessages } = makeService({
+      userPlan: Plan.FREE,
+      forwardsToday: 99,
+      routes: [
+        makeRoute({ id: "route-1", destinationGroupJid: "one@g.us" }),
+        makeRoute({ id: "route-2", destinationGroupJid: "two@g.us" }),
+      ],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://amzn.to/abc",
+          links: ["https://amzn.to/abc"],
+        },
+      ],
+      rewrittenText: "Oferta afiliada",
+    });
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+    );
+
+    assert.equal(response.sentCount, 1);
+    assert.equal(response.skippedCount, 1);
+    assert.equal(sentMessages.length, 1);
+    assert.deepEqual(
+      forwarded.map((message) => message.reason),
+      [undefined, ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED],
+    );
   });
 
   it("uses a custom promotional signature for FREE users", async () => {

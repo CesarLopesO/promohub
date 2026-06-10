@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start --port 3000",
     "lint": "eslint .",
-    "test": "tsx --tsconfig tsconfig.test.json --test src/components/support.spec.tsx",
+    "test": "tsx --tsconfig tsconfig.test.json --test src/components/*.spec.tsx",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
