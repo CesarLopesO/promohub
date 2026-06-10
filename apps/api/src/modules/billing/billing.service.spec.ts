@@ -40,13 +40,16 @@ function makeService(options?: {
     name: string;
     email: string;
     cpfCnpj: string | null;
+    cpfCnpjHash: string | null;
     plan: Plan;
     subscriptionStatus: SubscriptionStatus;
   } = {
     id: "user-1",
     name: "User",
     email: "user@example.com",
-    cpfCnpj: options?.cpfCnpj === undefined ? "12345678909" : options.cpfCnpj,
+    cpfCnpj:
+      options?.cpfCnpj === undefined ? "***.***.***-09" : options.cpfCnpj,
+    cpfCnpjHash: null,
     plan: Plan.FREE,
     subscriptionStatus: SubscriptionStatus.NONE,
   };
@@ -58,6 +61,8 @@ function makeService(options?: {
     localSubscriptionId: string;
     existingCustomerId?: string | null;
   }> = [];
+  const referralConfirmations: string[] = [];
+  const referralResets: string[] = [];
   const prisma = {
     user: {
       findUnique: async () => user,
@@ -254,10 +259,14 @@ function makeService(options?: {
         id: string;
         subscription: string;
         externalReference?: string;
+        cpfCnpj?: string;
       };
     }) => ({
       eventId: payload.id,
       eventType: payload.event,
+      ...(payload.payment.cpfCnpj
+        ? { cpfCnpj: payload.payment.cpfCnpj.replace(/\D/g, "") }
+        : {}),
       payment: {
         id: payload.payment.id,
         subscriptionId: payload.payment.subscription,
@@ -273,7 +282,9 @@ function makeService(options?: {
       get: (key: string) =>
         key === "ASAAS_WEBHOOK_TOKEN"
           ? (options?.webhookToken ?? "secret")
-          : undefined,
+          : key === "REFERRAL_CPF_HASH_PEPPER"
+            ? "test-pepper"
+            : undefined,
     } as never,
     {
       getLimits: (plan: Plan) => ({
@@ -285,19 +296,34 @@ function makeService(options?: {
         adsEnabled: plan === Plan.FREE,
       }),
     } as never,
+    {
+      confirmPayment: async (userId: string) => {
+        referralConfirmations.push(userId);
+      },
+      resetWaitingPeriod: async (userId: string) => {
+        referralResets.push(userId);
+      },
+    } as never,
   );
 
-  return { service, user, subscriptions, asaasCalls };
+  return {
+    service,
+    user,
+    subscriptions,
+    asaasCalls,
+    referralConfirmations,
+    referralResets,
+  };
 }
 
 function createCheckout(
   service: BillingService,
   plan: Extract<Plan, "BASIC" | "PRO">,
 ) {
-  return service.checkout("user-1", plan);
+  return service.checkout("user-1", plan, "123.456.789-09");
 }
 
-function webhook(event: string) {
+function webhook(event: string, cpfCnpj?: string) {
   return {
     id: `evt_${event}`,
     event,
@@ -305,6 +331,7 @@ function webhook(event: string) {
       id: "pay_1",
       subscription: "sub_1",
       externalReference: "billing-1",
+      ...(cpfCnpj ? { cpfCnpj } : {}),
     },
   };
 }
@@ -322,12 +349,14 @@ describe("BillingService", () => {
     assert.equal(subscriptions.length, 0);
   });
 
-  it("normalizes, saves, and sends CPF/CNPJ to Asaas", async () => {
+  it("stores only masked and peppered CPF/CNPJ data", async () => {
     const { service, user, asaasCalls } = makeService({ cpfCnpj: null });
 
     await service.checkout("user-1", Plan.PRO, "123.456.789-09");
 
-    assert.equal(user.cpfCnpj, "12345678909");
+    assert.equal(user.cpfCnpj, "***.***.***-09");
+    assert.match(user.cpfCnpjHash ?? "", /^[a-f0-9]{64}$/);
+    assert.notEqual(user.cpfCnpjHash, "12345678909");
     assert.equal(asaasCalls[0]?.user.cpfCnpj, "12345678909");
   });
 
@@ -336,7 +365,8 @@ describe("BillingService", () => {
 
     await service.checkout("user-1", Plan.BASIC, "11.222.333/0001-81");
 
-    assert.equal(user.cpfCnpj, "11222333000181");
+    assert.equal(user.cpfCnpj, "**.***.***/****-81");
+    assert.match(user.cpfCnpjHash ?? "", /^[a-f0-9]{64}$/);
   });
 
   it("returns only the masked CPF/CNPJ in subscription", async () => {
@@ -373,12 +403,22 @@ describe("BillingService", () => {
     assert.equal(free.priceCents, 0);
     assert.equal(basic.priceCents, 7990);
     assert.equal(pro.priceCents, 9990);
-    assert.ok(free.features.includes("propaganda Promohub"));
+    assert.equal(free.description, "Comece grátis com automação básica.");
+    assert.equal(
+      basic.description,
+      "Para operações em crescimento sem propaganda.",
+    );
+    assert.equal(
+      pro.description,
+      "Para operação profissional com múltiplos WhatsApps.",
+    );
+    assert.ok(free.features.includes("propaganda PeppaBot"));
     assert.ok(free.features.includes("até 3 grupos origem"));
   });
 
   it("activates the contracted plan for 30 days", async () => {
-    const { service, user, subscriptions } = makeService();
+    const { service, user, subscriptions, referralConfirmations } =
+      makeService();
     await createCheckout(service, Plan.PRO);
 
     const result = await service.handleAsaasWebhook(
@@ -396,10 +436,36 @@ describe("BillingService", () => {
         subscriptions[0]!.currentPeriodStart!.getTime(),
       30 * 24 * 60 * 60 * 1000,
     );
+    assert.deepEqual(referralConfirmations, ["user-1"]);
+  });
+
+  it("does not confirm referrals for non-confirmed payment events", async () => {
+    const { service, referralConfirmations } = makeService();
+    await createCheckout(service, Plan.BASIC);
+
+    await service.handleAsaasWebhook("secret", webhook("PAYMENT_RECEIVED"));
+
+    assert.deepEqual(referralConfirmations, []);
+  });
+
+  it("updates the masked document and hash from a confirmed webhook", async () => {
+    const { service, user } = makeService({ cpfCnpj: null });
+    await createCheckout(service, Plan.BASIC);
+    user.cpfCnpj = null;
+    user.cpfCnpjHash = null;
+
+    await service.handleAsaasWebhook(
+      "secret",
+      webhook("PAYMENT_CONFIRMED", "12.345.678/0001-81"),
+    );
+
+    assert.equal(user.cpfCnpj, "**.***.***/****-81");
+    assert.match(user.cpfCnpjHash ?? "", /^[a-f0-9]{64}$/);
+    assert.notEqual(user.cpfCnpjHash, "12345678000181");
   });
 
   it("returns to FREE immediately when a payment is overdue", async () => {
-    const { service, user, subscriptions } = makeService();
+    const { service, user, subscriptions, referralResets } = makeService();
     await createCheckout(service, Plan.BASIC);
     user.plan = Plan.BASIC;
 
@@ -408,6 +474,7 @@ describe("BillingService", () => {
     assert.equal(user.plan, Plan.FREE);
     assert.equal(user.subscriptionStatus, SubscriptionStatus.PAST_DUE);
     assert.equal(subscriptions[0]?.status, SubscriptionStatus.PAST_DUE);
+    assert.deepEqual(referralResets, ["user-1"]);
   });
 
   it("returns to FREE immediately after a refund", async () => {
@@ -485,7 +552,7 @@ describe("BillingService", () => {
   });
 
   it("cancels the Asaas subscription and downgrades immediately", async () => {
-    const { service, user, subscriptions } = makeService();
+    const { service, user, subscriptions, referralResets } = makeService();
     await createCheckout(service, Plan.BASIC);
     user.plan = Plan.BASIC;
     user.subscriptionStatus = SubscriptionStatus.ACTIVE;
@@ -498,5 +565,6 @@ describe("BillingService", () => {
     assert.equal(user.plan, Plan.FREE);
     assert.equal(user.subscriptionStatus, SubscriptionStatus.CANCELED);
     assert.equal(subscriptions[0]?.status, SubscriptionStatus.CANCELED);
+    assert.deepEqual(referralResets, ["user-1"]);
   });
 });

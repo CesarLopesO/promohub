@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 
 import { PrismaService } from "../../prisma.service";
+import { WorkerNodesService } from "../workers/worker-nodes.service";
 
 type HealthDto = {
   status: "ok" | "degraded";
@@ -10,6 +11,19 @@ type HealthDto = {
   connectedSessions: number;
   activeRoutes: number;
   lastForwardAt?: Date;
+  workers: {
+    active: number;
+    stale: number;
+    sessions: number;
+    nodes: Array<{
+      id: string;
+      name: string;
+      status: string;
+      lastHeartbeatAt: Date;
+      currentSessions: number;
+      maxSessions: number;
+    }>;
+  };
 };
 
 type MonitoringStatsDto = {
@@ -80,36 +94,41 @@ const TEXT_PREVIEW_LIMIT = 180;
 
 @Injectable()
 export class MonitoringService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly workers: WorkerNodesService,
+  ) {}
 
   async health(): Promise<HealthDto> {
     const database = await this.checkDatabase();
-    const [connectedSessions, activeRoutes, lastForward] = await Promise.all([
-      this.prisma.whatsAppSession.count({
-        where: {
-          deletedAt: null,
-          status: "CONNECTED",
-        },
-      }),
-      this.prisma.messageRoute.count({
-        where: {
-          isActive: true,
-        },
-      }),
-      this.prisma.forwardedMessage.findFirst({
-        where: {
-          sentAt: {
-            not: null,
+    const [connectedSessions, activeRoutes, lastForward, workers] =
+      await Promise.all([
+        this.prisma.whatsAppSession.count({
+          where: {
+            deletedAt: null,
+            status: "CONNECTED",
           },
-        },
-        orderBy: {
-          sentAt: "desc",
-        },
-        select: {
-          sentAt: true,
-        },
-      }),
-    ]);
+        }),
+        this.prisma.messageRoute.count({
+          where: {
+            isActive: true,
+          },
+        }),
+        this.prisma.forwardedMessage.findFirst({
+          where: {
+            sentAt: {
+              not: null,
+            },
+          },
+          orderBy: {
+            sentAt: "desc",
+          },
+          select: {
+            sentAt: true,
+          },
+        }),
+        this.workers.listWorkers(),
+      ]);
 
     return {
       status: database === "ok" ? "ok" : "degraded",
@@ -118,6 +137,22 @@ export class MonitoringService {
       connectedSessions,
       activeRoutes,
       lastForwardAt: lastForward?.sentAt ?? undefined,
+      workers: {
+        active: workers.filter((worker) => worker.status === "ACTIVE").length,
+        stale: workers.filter((worker) => worker.status === "STALE").length,
+        sessions: workers.reduce(
+          (total, worker) => total + worker.currentSessions,
+          0,
+        ),
+        nodes: workers.map((worker) => ({
+          id: worker.id,
+          name: worker.name,
+          status: worker.status,
+          lastHeartbeatAt: worker.lastHeartbeatAt,
+          currentSessions: worker.currentSessions,
+          maxSessions: worker.maxSessions,
+        })),
+      },
     };
   }
 

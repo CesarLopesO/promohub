@@ -15,6 +15,7 @@ import { JwtAuthGuard } from "../auth/jwt.guard";
 import { PlanLimitsService } from "../plans/plan-limits.service";
 import { UpsertAffiliateGeneratorConfigDto } from "../affiliate/dto/upsert-affiliate-generator-config.dto";
 import { AffiliateGeneratorConfigService } from "../affiliate/services/affiliate-generator-config.service";
+import { WorkerNodesService } from "../workers/worker-nodes.service";
 import { AdminService } from "./admin.service";
 
 @UseGuards(JwtAuthGuard, AdminGuard)
@@ -24,6 +25,7 @@ export class AdminController {
     private readonly adminService: AdminService,
     private readonly planLimits: PlanLimitsService,
     private readonly generatorConfigs: AffiliateGeneratorConfigService,
+    private readonly workers: WorkerNodesService,
   ) {}
 
   @Get("affiliate-generator-configs")
@@ -100,5 +102,10 @@ export class AdminController {
   @Get("sessions")
   sessions() {
     return this.adminService.sessions();
+  }
+
+  @Get("workers")
+  workersList() {
+    return this.workers.listWorkers();
   }
 }

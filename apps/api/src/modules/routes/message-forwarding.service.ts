@@ -15,17 +15,17 @@ import {
   detectWhatsAppInviteLinks,
   replaceWhatsAppLinks,
 } from "./helpers/whatsapp-link-rewriter";
+import {
+  ForwardSkipReason,
+  type ForwardSkipReason as ForwardSkipReasonValue,
+} from "./forward-skip-reason";
 
 const FORWARDED_STATUS_SENT = "SENT";
 const FORWARDED_STATUS_SENT_TEXT_FALLBACK = "SENT_TEXT_FALLBACK";
 const FORWARDED_STATUS_FAILED = "FAILED";
 const FORWARDED_STATUS_SKIPPED = "SKIPPED";
 const FORWARDED_STATUS_SKIPPED_ALREADY_SENT = "SKIPPED_ALREADY_SENT";
-const FREE_PLAN_SIGNATURE = [
-  "🤖 Automatizado por PeppaBot",
-  "Automação de grupos de ofertas e afiliados",
-  "peppabot.com",
-].join("\n");
+const FREE_PLAN_SIGNATURE = "🤖 Automatizado por PeppaBot";
 
 type ForwardMode = "manual" | "auto";
 
@@ -35,6 +35,7 @@ export type ForwardMessageResultDto = {
   sentMessageType?: string;
   mediaForwarded?: boolean;
   sentProviderMessageId?: string;
+  reason?: ForwardSkipReasonValue;
   error?: string;
   warnings?: string[];
 };
@@ -92,7 +93,12 @@ export class MessageForwardingService {
     const whatsappLinks = detectWhatsAppInviteLinks(message.text ?? "");
 
     if (mode === "auto" && links.length === 0 && whatsappLinks.length === 0) {
-      console.log("[AUTO_FORWARD] skipped no links");
+      this.logOperational("AUTO_FORWARD", "skipped", {
+        sessionId: message.sessionId,
+        sourceGroupJid: message.groupJid,
+        messageId: message.id,
+        reason: ForwardSkipReason.NO_LINKS,
+      });
       return this.toForwardResponse(message.id, []);
     }
 
@@ -109,9 +115,19 @@ export class MessageForwardingService {
     });
 
     if (routes.length === 0) {
-      if (mode === "auto") {
-        console.log("[AUTO_FORWARD] skipped no active routes");
-      }
+      this.logOperational(
+        mode === "auto" ? "AUTO_FORWARD" : "MESSAGE_FORWARD",
+        "skipped",
+        {
+          sessionId: message.sessionId,
+          sourceGroupJid: message.groupJid,
+          messageId: message.id,
+          reason:
+            mode === "auto"
+              ? ForwardSkipReason.NO_ACTIVE_ROUTES
+              : ForwardSkipReason.ROUTE_NOT_FOUND,
+        },
+      );
 
       return this.toForwardResponse(message.id, []);
     }
@@ -133,11 +149,15 @@ export class MessageForwardingService {
     );
 
     if (mercadoLivreRewrites.length > 0 && !allMercadoLivreRewritesSucceeded) {
-      const reason =
+      const providerReason =
         rewritePreview.reason ??
         mercadoLivreRewrites.find((rewrite) => !rewrite.changed)?.reason ??
         "MERCADO_LIVRE_GENERATION_FAILED";
-      console.log(`[MESSAGE_FORWARD] skipped reason=${reason}`);
+      const reason = this.normalizeAffiliateReason(
+        Marketplace.MERCADO_LIVRE,
+        providerReason,
+      );
+      this.logSkippedForRoutes(message, routes, reason);
 
       return this.persistSkippedForRoutes({
         userId: normalizedUserId,
@@ -150,6 +170,7 @@ export class MessageForwardingService {
           message.text ??
           "",
         reason,
+        errorDetail: providerReason,
       });
     }
 
@@ -161,8 +182,13 @@ export class MessageForwardingService {
     );
 
     if (failedAmazonRewrite) {
-      const reason = failedAmazonRewrite.reason ?? "AMAZON_TAG_NOT_CONFIGURED";
-      console.log(`[MESSAGE_FORWARD] skipped reason=${reason}`);
+      const providerReason =
+        failedAmazonRewrite.reason ?? "AMAZON_GENERATION_FAILED";
+      const reason = this.normalizeAffiliateReason(
+        Marketplace.AMAZON,
+        providerReason,
+      );
+      this.logSkippedForRoutes(message, routes, reason);
 
       return this.persistSkippedForRoutes({
         userId: normalizedUserId,
@@ -175,6 +201,7 @@ export class MessageForwardingService {
           message.text ??
           "",
         reason,
+        errorDetail: providerReason,
       });
     }
 
@@ -185,17 +212,30 @@ export class MessageForwardingService {
       ) &&
       whatsappLinks.length === 0
     ) {
-      const reasons = [
-        ...new Set(
-          rewritePreview.rewrites
-            .map((rewrite) => rewrite.reason)
-            .filter((reason): reason is string => Boolean(reason)),
-        ),
-      ];
-      console.log(
-        `[AUTO_FORWARD] skipped no rewritten links${reasons.length > 0 ? ` reason=${reasons.join(",")}` : ""}`,
+      const failedRewrite = rewritePreview.rewrites.find(
+        (rewrite) => rewrite.canForward !== true,
       );
-      return this.toForwardResponse(message.id, []);
+      const reason = failedRewrite
+        ? this.normalizeAffiliateReason(
+            failedRewrite.marketplace,
+            failedRewrite.reason,
+          )
+        : ForwardSkipReason.NO_LINKS;
+      this.logSkippedForRoutes(message, routes, reason);
+
+      return this.persistSkippedForRoutes({
+        userId: normalizedUserId,
+        message,
+        routes,
+        mode,
+        rewrittenText:
+          rewritePreview.rewrittenText ??
+          rewritePreview.originalText ??
+          message.text ??
+          "",
+        reason,
+        errorDetail: failedRewrite?.reason,
+      });
     }
 
     const affiliateRewrittenText =
@@ -212,6 +252,19 @@ export class MessageForwardingService {
     }
 
     if (session.status !== "CONNECTED") {
+      this.logSkippedForRoutes(
+        message,
+        routes,
+        ForwardSkipReason.SESSION_DISCONNECTED,
+      );
+      await this.persistSkippedForRoutes({
+        userId: normalizedUserId,
+        message,
+        routes,
+        mode,
+        rewrittenText: affiliateRewrittenText,
+        reason: ForwardSkipReason.SESSION_DISCONNECTED,
+      });
       throw new BadRequestException("WhatsApp session is not connected.");
     }
 
@@ -243,7 +296,7 @@ export class MessageForwardingService {
 
       if (whatsappRewrite.changed) {
         console.log(
-          `[WHATSAPP_LINK_REWRITE] replaced count=${whatsappRewrite.links.length}`,
+          `[WHATSAPP_LINK_REWRITE] replaced sessionId=${message.sessionId} sourceGroupJid=${message.groupJid} destinationGroupJid=${destinationGroupJid} messageId=${message.id} count=${whatsappRewrite.links.length}`,
         );
       }
       const alreadySent = await this.prisma.forwardedMessage.findFirst({
@@ -255,9 +308,32 @@ export class MessageForwardingService {
       });
 
       if (alreadySent) {
+        this.logOperational("MESSAGE_FORWARD", "skipped", {
+          sessionId: message.sessionId,
+          sourceGroupJid: message.groupJid,
+          destinationGroupJid,
+          messageId: message.id,
+          reason: ForwardSkipReason.DUPLICATE_FORWARD,
+        });
+        await this.prisma.forwardedMessage.create({
+          data: {
+            userId: normalizedUserId,
+            sessionId: message.sessionId,
+            sourceMessageId: message.id,
+            sourceGroupJid: message.groupJid,
+            destinationGroupJid,
+            originalText: message.text,
+            rewrittenText,
+            status: FORWARDED_STATUS_SKIPPED_ALREADY_SENT,
+            mode: this.toStoredMode(mode),
+            mediaForwarded: false,
+            reason: ForwardSkipReason.DUPLICATE_FORWARD,
+          },
+        });
         results.push({
           destinationGroupJid,
           status: FORWARDED_STATUS_SKIPPED_ALREADY_SENT,
+          reason: ForwardSkipReason.DUPLICATE_FORWARD,
         });
         continue;
       }
@@ -288,11 +364,14 @@ export class MessageForwardingService {
             mediaForwarded: sendResult.mediaForwarded,
             sentProviderMessageId: sendResult.sentProviderMessageId,
             sentProviderRaw: sendResult.sentProviderRaw,
+            reason: sendResult.reason,
             sentAt: new Date(),
           },
         });
         if (mode === "auto") {
-          console.log(`[AUTO_FORWARD] sent ${destinationGroupJid}`);
+          console.log(
+            `[AUTO_FORWARD] sent sessionId=${message.sessionId} sourceGroupJid=${message.groupJid} destinationGroupJid=${destinationGroupJid} messageId=${message.id}`,
+          );
         }
         results.push({
           destinationGroupJid,
@@ -300,14 +379,19 @@ export class MessageForwardingService {
           sentMessageType: sendResult.sentMessageType,
           mediaForwarded: sendResult.mediaForwarded,
           sentProviderMessageId: sendResult.sentProviderMessageId,
+          ...(sendResult.reason ? { reason: sendResult.reason } : {}),
           ...(warnings.length > 0 ? { warnings } : {}),
         });
       } catch (error) {
         const errorMessage = this.readErrorMessage(error);
 
-        console.error(
-          `[FORWARD_SEND_RESULT] destinationGroupJid=${destinationGroupJid} messageId=none status=${FORWARDED_STATUS_FAILED} error=${errorMessage}`,
-        );
+        this.logOperational("FORWARD_SEND_RESULT", "failed", {
+          sessionId: message.sessionId,
+          sourceGroupJid: message.groupJid,
+          destinationGroupJid,
+          messageId: message.id,
+          reason: ForwardSkipReason.SEND_FAILED,
+        });
         await this.prisma.forwardedMessage.create({
           data: {
             userId: normalizedUserId,
@@ -321,19 +405,25 @@ export class MessageForwardingService {
             mode: this.toStoredMode(mode),
             sentMessageType: "text",
             mediaForwarded: false,
+            reason: ForwardSkipReason.SEND_FAILED,
             error: errorMessage,
           },
         });
         if (mode === "auto") {
-          console.log(
-            `[AUTO_FORWARD] failed ${destinationGroupJid} ${errorMessage}`,
-          );
+          this.logOperational("AUTO_FORWARD", "failed", {
+            sessionId: message.sessionId,
+            sourceGroupJid: message.groupJid,
+            destinationGroupJid,
+            messageId: message.id,
+            reason: ForwardSkipReason.SEND_FAILED,
+          });
         }
         results.push({
           destinationGroupJid,
           status: FORWARDED_STATUS_FAILED,
           sentMessageType: "text",
           mediaForwarded: false,
+          reason: ForwardSkipReason.SEND_FAILED,
           error: errorMessage,
           ...(warnings.length > 0 ? { warnings } : {}),
         });
@@ -375,7 +465,8 @@ export class MessageForwardingService {
     routes: Array<{ destinationGroupJid: string }>;
     mode: ForwardMode;
     rewrittenText: string;
-    reason: string;
+    reason: ForwardSkipReasonValue;
+    errorDetail?: string;
   }): Promise<ForwardMessageResponseDto> {
     const results: ForwardMessageResultDto[] = [];
 
@@ -392,14 +483,16 @@ export class MessageForwardingService {
           status: FORWARDED_STATUS_SKIPPED,
           mode: this.toStoredMode(params.mode),
           mediaForwarded: false,
-          error: params.reason,
+          reason: params.reason,
+          error: params.errorDetail ?? params.reason,
         },
       });
       results.push({
         destinationGroupJid: route.destinationGroupJid,
         status: FORWARDED_STATUS_SKIPPED,
         mediaForwarded: false,
-        error: params.reason,
+        reason: params.reason,
+        error: params.errorDetail ?? params.reason,
       });
     }
 
@@ -428,6 +521,9 @@ export class MessageForwardingService {
     >["socket"],
     destinationGroupJid: string,
     message: {
+      id: string;
+      sessionId: string;
+      groupJid: string;
       messageType: string;
       hasMedia: boolean;
       rawMessage: Prisma.JsonValue | null;
@@ -439,57 +535,83 @@ export class MessageForwardingService {
     mediaForwarded: boolean;
     sentProviderMessageId?: string;
     sentProviderRaw?: Prisma.InputJsonValue;
+    reason?: ForwardSkipReasonValue;
   }> {
     if (message.messageType !== "image" || !message.hasMedia) {
       const providerResult = await socket.sendMessage(destinationGroupJid, {
         text: rewrittenText,
       });
 
-      return this.toSuccessfulSendResult(destinationGroupJid, providerResult, {
-        status: FORWARDED_STATUS_SENT,
-        sentMessageType: "text",
-        mediaForwarded: false,
-      });
+      return this.toSuccessfulSendResult(
+        message,
+        destinationGroupJid,
+        providerResult,
+        {
+          status: FORWARDED_STATUS_SENT,
+          sentMessageType: "text",
+          mediaForwarded: false,
+        },
+      );
     }
 
     let image: Buffer;
 
     try {
-      console.log("[FORWARD_MEDIA] downloading image");
       image = await this.downloadImage(message.rawMessage, socket);
     } catch {
-      console.log("[FORWARD_MEDIA] image failed, sending text fallback");
+      this.logOperational("FORWARD_MEDIA", "fallback", {
+        sessionId: message.sessionId,
+        sourceGroupJid: message.groupJid,
+        destinationGroupJid,
+        messageId: message.id,
+        reason: ForwardSkipReason.MEDIA_DOWNLOAD_FAILED,
+      });
       const providerResult = await socket.sendMessage(destinationGroupJid, {
         text: rewrittenText,
       });
 
-      return this.toSuccessfulSendResult(destinationGroupJid, providerResult, {
-        status: FORWARDED_STATUS_SENT_TEXT_FALLBACK,
-        sentMessageType: "text_fallback",
-        mediaForwarded: false,
-      });
+      return this.toSuccessfulSendResult(
+        message,
+        destinationGroupJid,
+        providerResult,
+        {
+          status: FORWARDED_STATUS_SENT_TEXT_FALLBACK,
+          sentMessageType: "text_fallback",
+          mediaForwarded: false,
+          reason: ForwardSkipReason.MEDIA_DOWNLOAD_FAILED,
+        },
+      );
     }
 
     const providerResult = await socket.sendMessage(destinationGroupJid, {
       image,
       caption: rewrittenText,
     });
-    console.log("[FORWARD_MEDIA] image sent");
-
-    return this.toSuccessfulSendResult(destinationGroupJid, providerResult, {
-      status: FORWARDED_STATUS_SENT,
-      sentMessageType: "image",
-      mediaForwarded: true,
-    });
+    return this.toSuccessfulSendResult(
+      message,
+      destinationGroupJid,
+      providerResult,
+      {
+        status: FORWARDED_STATUS_SENT,
+        sentMessageType: "image",
+        mediaForwarded: true,
+      },
+    );
   }
 
   private toSuccessfulSendResult(
+    message: {
+      id: string;
+      sessionId: string;
+      groupJid: string;
+    },
     destinationGroupJid: string,
     providerResult: unknown,
     result: {
       status: string;
       sentMessageType: string;
       mediaForwarded: boolean;
+      reason?: ForwardSkipReasonValue;
     },
   ): {
     status: string;
@@ -497,13 +619,14 @@ export class MessageForwardingService {
     mediaForwarded: boolean;
     sentProviderMessageId?: string;
     sentProviderRaw?: Prisma.InputJsonValue;
+    reason?: ForwardSkipReasonValue;
   } {
     const sentProviderMessageId =
       this.readProviderMessageId(providerResult) ?? undefined;
     const sentProviderRaw = this.sanitizeProviderResult(providerResult);
 
     console.log(
-      `[FORWARD_SEND_RESULT] destinationGroupJid=${destinationGroupJid} messageId=${sentProviderMessageId ?? "none"} status=${result.status}`,
+      `[FORWARD_SEND_RESULT] sessionId=${message.sessionId} sourceGroupJid=${message.groupJid} destinationGroupJid=${destinationGroupJid} messageId=${message.id} providerMessageId=${sentProviderMessageId ?? "none"} status=${result.status}${result.reason ? ` reason=${result.reason}` : ""}`,
     );
 
     return {
@@ -639,6 +762,55 @@ export class MessageForwardingService {
   private isAmazonFailureReason(reason?: string): boolean {
     return (
       reason === "INVALID_AMAZON_URL" || Boolean(reason?.startsWith("AMAZON_"))
+    );
+  }
+
+  private normalizeAffiliateReason(
+    marketplace: Marketplace,
+    providerReason?: string,
+  ): ForwardSkipReasonValue {
+    if (
+      providerReason === "AMAZON_TAG_NOT_CONFIGURED" ||
+      providerReason === "MISSING_MERCADO_LIVRE_SESSION" ||
+      providerReason === "MISSING_AFFILIATE_VALUE"
+    ) {
+      return ForwardSkipReason.AFFILIATE_CREDENTIAL_MISSING;
+    }
+
+    return marketplace === Marketplace.MERCADO_LIVRE
+      ? ForwardSkipReason.ML_GENERATION_FAILED
+      : ForwardSkipReason.AMAZON_GENERATION_FAILED;
+  }
+
+  private logSkippedForRoutes(
+    message: { id: string; sessionId: string; groupJid: string },
+    routes: Array<{ destinationGroupJid: string }>,
+    reason: ForwardSkipReasonValue,
+  ): void {
+    for (const route of routes) {
+      this.logOperational("MESSAGE_FORWARD", "skipped", {
+        sessionId: message.sessionId,
+        sourceGroupJid: message.groupJid,
+        destinationGroupJid: route.destinationGroupJid,
+        messageId: message.id,
+        reason,
+      });
+    }
+  }
+
+  private logOperational(
+    scope: string,
+    action: "skipped" | "failed" | "fallback",
+    context: {
+      sessionId: string;
+      sourceGroupJid: string;
+      destinationGroupJid?: string;
+      messageId?: string;
+      reason: ForwardSkipReasonValue;
+    },
+  ): void {
+    console.log(
+      `[${scope}] ${action} sessionId=${context.sessionId} sourceGroupJid=${context.sourceGroupJid}${context.destinationGroupJid ? ` destinationGroupJid=${context.destinationGroupJid}` : ""}${context.messageId ? ` messageId=${context.messageId}` : ""} reason=${context.reason}`,
     );
   }
 

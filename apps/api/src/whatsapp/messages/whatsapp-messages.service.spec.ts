@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import type { WAMessage } from "@whiskeysockets/baileys";
 
 import { MessageForwardingService } from "../../modules/routes/message-forwarding.service";
+import { ForwardSkipReason } from "../../modules/routes/forward-skip-reason";
 import { WhatsAppMessagesService } from "./whatsapp-messages.service";
 
 function makeModuleRef(calls: Array<{ userId: string; messageId: string }>) {
@@ -22,6 +23,22 @@ function makeModuleRef(calls: Array<{ userId: string; messageId: string }>) {
 
 async function flushAsyncWork(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function captureLogs(work: () => Promise<void>): Promise<string[]> {
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = (...values: unknown[]) => {
+    logs.push(values.map(String).join(" "));
+  };
+
+  try {
+    await work();
+  } finally {
+    console.log = originalLog;
+  }
+
+  return logs;
 }
 
 describe("WhatsAppMessagesService", () => {
@@ -218,9 +235,19 @@ describe("WhatsAppMessagesService", () => {
       },
     } as WAMessage;
 
-    await service.recordIncomingGroupMessage("session-id", message);
+    const logs = await captureLogs(() =>
+      service.recordIncomingGroupMessage("session-id", message),
+    );
 
     assert.deepEqual(autoForwardCalls, []);
+    assert.ok(
+      logs.some(
+        (log) =>
+          log.includes("sessionId=session-id") &&
+          log.includes("sourceGroupJid=120363000000000000@g.us") &&
+          log.includes(`reason=${ForwardSkipReason.NO_LINKS}`),
+      ),
+    );
   });
 
   it("does not call auto forward when there is no active route", async () => {
@@ -256,10 +283,19 @@ describe("WhatsAppMessagesService", () => {
       },
     } as WAMessage;
 
-    await service.recordIncomingGroupMessage("session-id", message);
-    await flushAsyncWork();
+    const logs = await captureLogs(async () => {
+      await service.recordIncomingGroupMessage("session-id", message);
+      await flushAsyncWork();
+    });
 
     assert.deepEqual(autoForwardCalls, []);
+    assert.ok(
+      logs.some(
+        (log) =>
+          log.includes("[AUTO_FORWARD] skipped") &&
+          log.includes(`reason=${ForwardSkipReason.NO_ACTIVE_ROUTES}`),
+      ),
+    );
   });
 
   it("skips fromMe, private, reaction, and protocol messages", async () => {
@@ -309,11 +345,21 @@ describe("WhatsAppMessagesService", () => {
       },
     ] as WAMessage[];
 
-    for (const message of messages) {
-      await service.recordIncomingGroupMessage("wa_current", message);
-    }
+    const logs = await captureLogs(async () => {
+      for (const message of messages) {
+        await service.recordIncomingGroupMessage("wa_current", message);
+      }
+    });
 
     assert.equal(createCount, 0);
+    for (const reason of [
+      ForwardSkipReason.FROM_ME,
+      ForwardSkipReason.PRIVATE_CHAT,
+      ForwardSkipReason.REACTION,
+      ForwardSkipReason.PROTOCOL,
+    ]) {
+      assert.ok(logs.some((log) => log.includes(`reason=${reason}`)));
+    }
   });
 
   it("persists the public wa sessionId for ephemeral text messages", async () => {
@@ -353,9 +399,6 @@ describe("WhatsAppMessagesService", () => {
       } as WAMessage,
     );
 
-    assert.equal(
-      storedSessionId,
-      "wa_5032495467bb4aa09dce5c851d78672a",
-    );
+    assert.equal(storedSessionId, "wa_5032495467bb4aa09dce5c851d78672a");
   });
 });

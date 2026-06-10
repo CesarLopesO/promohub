@@ -71,6 +71,7 @@ export type ForwardedMessageDto = {
   mediaForwarded: boolean;
   sentProviderMessageId?: string;
   sentProviderRaw?: Prisma.JsonValue;
+  reason?: string;
   error?: string;
   sentAt?: Date;
   createdAt: Date;
@@ -251,6 +252,13 @@ export class MessageRoutesService {
       if (duplicate) {
         throw new ConflictException("Esta rota já existe.");
       }
+
+      await this.planLimits.assertCanCreateRoute(
+        route.userId,
+        data.sourceGroupJid,
+        data.destinationGroupJid,
+        route.id,
+      );
     }
 
     let updated: MessageRoute;
@@ -484,6 +492,7 @@ export class MessageRoutesService {
       mediaForwarded: message.mediaForwarded,
       sentProviderMessageId: message.sentProviderMessageId ?? undefined,
       sentProviderRaw: message.sentProviderRaw ?? undefined,
+      reason: message.reason ?? undefined,
       error: message.error ?? undefined,
       sentAt: message.sentAt ?? undefined,
       createdAt: message.createdAt,

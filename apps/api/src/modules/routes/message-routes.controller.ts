@@ -24,6 +24,8 @@ import {
   MessageRoutePreviewDto,
   MessageRoutesService,
 } from "./message-routes.service";
+import { RateLimit } from "../../common/security/rate-limit.decorator";
+import { RateLimitGuard } from "../../common/security/rate-limit.guard";
 
 @UseGuards(JwtAuthGuard)
 @Controller("routes")
@@ -31,6 +33,13 @@ export class MessageRoutesController {
   constructor(private readonly routesService: MessageRoutesService) {}
 
   @Post()
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    name: "routes-mutate",
+    limit: 30,
+    windowMs: 60 * 1000,
+    key: "user",
+  })
   create(
     @Body() body: CreateMessageRouteDto,
     @Req() req: AuthenticatedRequest,
@@ -63,6 +72,13 @@ export class MessageRoutesController {
   }
 
   @Patch(":id")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    name: "routes-mutate",
+    limit: 30,
+    windowMs: 60 * 1000,
+    key: "user",
+  })
   update(
     @Param("id") id: string,
     @Body() body: UpdateMessageRouteDto,

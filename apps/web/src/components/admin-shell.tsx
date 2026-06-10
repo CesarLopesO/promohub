@@ -7,8 +7,10 @@ import {
   AlertTriangle,
   ArrowLeft,
   Gauge,
+  Gift,
   LogOut,
   MessageSquareWarning,
+  LifeBuoy,
   Send,
   Smartphone,
   Users,
@@ -23,6 +25,8 @@ const adminNavItems = [
   { href: "/admin/sessions", label: "Sessões", icon: Smartphone },
   { href: "/admin/forwards", label: "Forwards", icon: Send },
   { href: "/admin/errors", label: "Erros", icon: MessageSquareWarning },
+  { href: "/admin/settings", label: "Suporte", icon: LifeBuoy },
+  { href: "/admin/referrals", label: "Indicações", icon: Gift },
 ];
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
@@ -117,9 +121,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       <main className="dashboard-main">
         <header className="dashboard-header">
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-slate-950">
-              Admin
-            </p>
+            <p className="truncate text-sm font-medium text-slate-950">Admin</p>
             <p className="text-xs text-slate-500">Operação PeppaBot</p>
           </div>
           <ThemeToggle />

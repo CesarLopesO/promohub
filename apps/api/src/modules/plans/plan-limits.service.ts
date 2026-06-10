@@ -1,7 +1,12 @@
-import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import { Plan } from "@prisma/client";
 
 import { PrismaService } from "../../prisma.service";
+import { ForwardSkipReason } from "../routes/forward-skip-reason";
 
 type PlanLimits = {
   maxWhatsAppSessions: number;
@@ -17,11 +22,18 @@ type PlanUsage = {
   activeRoutes: number;
 };
 
+type ActiveRouteGroups = {
+  sourceGroupJid: string;
+  destinationGroupJid: string;
+};
+
 export type PlanUsageDto = {
   plan: Plan;
   limits: PlanLimits;
   usage: PlanUsage;
 };
+
+export const PLAN_LIMIT_REACHED = ForwardSkipReason.PLAN_LIMIT_REACHED;
 
 const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   FREE: {
@@ -98,8 +110,12 @@ export class PlanLimitsService {
     const usage = await this.getUsage(userId);
 
     if (usage.usage.whatsappSessions >= usage.limits.maxWhatsAppSessions) {
-      throw new ForbiddenException(
-        `Limite do plano ${usage.plan} atingido: máximo de ${usage.limits.maxWhatsAppSessions} WhatsApp.`,
+      const sessionLabel =
+        usage.limits.maxWhatsAppSessions === 1
+          ? "sessão de WhatsApp cadastrada"
+          : "sessões de WhatsApp cadastradas";
+      this.throwPlanLimitReached(
+        `Seu plano ${usage.plan} permite no máximo ${usage.limits.maxWhatsAppSessions} ${sessionLabel}.`,
       );
     }
   }
@@ -108,39 +124,81 @@ export class PlanLimitsService {
     userId: string,
     sourceGroupJid: string,
     destinationGroupJid: string,
+    excludeRouteId?: string,
   ): Promise<void> {
-    const usage = await this.getUsage(userId);
-    const [sourceExists, destinationExists] = await Promise.all([
-      this.prisma.messageRoute.findFirst({
-        where: { userId, isActive: true, sourceGroupJid },
-        select: { id: true },
+    const [user, activeRoutes] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { plan: true },
       }),
-      this.prisma.messageRoute.findFirst({
-        where: { userId, isActive: true, destinationGroupJid },
-        select: { id: true },
+      this.prisma.messageRoute.findMany({
+        where: {
+          userId,
+          isActive: true,
+          ...(excludeRouteId ? { NOT: { id: excludeRouteId } } : {}),
+        },
+        select: {
+          sourceGroupJid: true,
+          destinationGroupJid: true,
+        },
       }),
     ]);
-    const nextSourceGroups =
-      usage.usage.sourceGroups + (sourceExists ? 0 : 1);
-    const nextDestinationGroups =
-      usage.usage.destinationGroups + (destinationExists ? 0 : 1);
+
+    if (!user) {
+      throw new NotFoundException("User not found.");
+    }
+
+    const limits = this.getLimits(user.plan);
+    const sourceGroups = this.distinctGroupCount(
+      activeRoutes,
+      "sourceGroupJid",
+      sourceGroupJid,
+    );
+    const destinationGroups = this.distinctGroupCount(
+      activeRoutes,
+      "destinationGroupJid",
+      destinationGroupJid,
+    );
 
     if (
-      usage.limits.maxSourceGroups !== null &&
-      nextSourceGroups > usage.limits.maxSourceGroups
+      limits.maxSourceGroups !== null &&
+      sourceGroups > limits.maxSourceGroups
     ) {
-      throw new ForbiddenException(
-        `Limite do plano ${usage.plan} atingido: máximo de ${usage.limits.maxSourceGroups} grupos origem.`,
+      const sourceLabel =
+        limits.maxSourceGroups === 1
+          ? "grupo de origem ativo"
+          : "grupos de origem ativos";
+      this.throwPlanLimitReached(
+        `Seu plano ${user.plan} permite no máximo ${limits.maxSourceGroups} ${sourceLabel}.`,
       );
     }
 
     if (
-      usage.limits.maxDestinationGroups !== null &&
-      nextDestinationGroups > usage.limits.maxDestinationGroups
+      limits.maxDestinationGroups !== null &&
+      destinationGroups > limits.maxDestinationGroups
     ) {
-      throw new ForbiddenException(
-        `Limite do plano ${usage.plan} atingido: máximo de ${usage.limits.maxDestinationGroups} grupo destino.`,
+      const destinationLabel =
+        limits.maxDestinationGroups === 1
+          ? "grupo de destino ativo"
+          : "grupos de destino ativos";
+      this.throwPlanLimitReached(
+        `Seu plano ${user.plan} permite no máximo ${limits.maxDestinationGroups} ${destinationLabel}.`,
       );
     }
+  }
+
+  private distinctGroupCount(
+    routes: ActiveRouteGroups[],
+    field: keyof ActiveRouteGroups,
+    nextGroupJid: string,
+  ): number {
+    return new Set([...routes.map((route) => route[field]), nextGroupJid]).size;
+  }
+
+  private throwPlanLimitReached(message: string): never {
+    throw new ForbiddenException({
+      code: PLAN_LIMIT_REACHED,
+      message,
+    });
   }
 }

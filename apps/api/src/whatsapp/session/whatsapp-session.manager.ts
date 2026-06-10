@@ -20,6 +20,9 @@ import type { WhatsAppSession } from "@prisma/client";
 
 import { PrismaService } from "../../prisma.service";
 import { PlanLimitsService } from "../../modules/plans/plan-limits.service";
+import { ForwardSkipReason } from "../../modules/routes/forward-skip-reason";
+import { WorkerLeaseService } from "../../modules/workers/worker-lease.service";
+import { WorkerNodesService } from "../../modules/workers/worker-nodes.service";
 import { BaileysPrismaAuthStore } from "../auth/baileys-prisma-auth.store";
 import type { WhatsAppSessionStatusDto } from "../dto/whatsapp-session-status.dto";
 import { WhatsAppMessagesService } from "../messages/whatsapp-messages.service";
@@ -28,6 +31,7 @@ import { WhatsAppSessionCacheService } from "./whatsapp-session-cache.service";
 type ManagedSession = {
   socket: WASocket;
   listenerRegistered: boolean;
+  leaseToken: string;
   qrCode?: string;
   qrCodeDataUrl?: string;
 };
@@ -55,6 +59,7 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
   >();
   private readonly retiredSockets = new WeakSet<WASocket>();
   private readonly logger = pino({ level: "silent" });
+  private leaseRenewalTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -62,9 +67,17 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     private readonly cache: WhatsAppSessionCacheService,
     private readonly messagesService: WhatsAppMessagesService,
     private readonly planLimits: PlanLimitsService,
+    private readonly workers: WorkerNodesService,
+    private readonly leases: WorkerLeaseService,
   ) {}
 
   async onModuleInit() {
+    await this.workers.registerEmbeddedWorker();
+    this.leaseRenewalTimer = setInterval(() => {
+      void this.renewActiveLeases();
+    }, this.workers.heartbeatIntervalMs());
+    this.leaseRenewalTimer.unref();
+
     const sessions = await this.prisma.whatsAppSession.findMany({
       where: {
         deletedAt: null,
@@ -137,7 +150,10 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     return status;
   }
 
-  async readQr(id: string, userId?: string): Promise<{
+  async readQr(
+    id: string,
+    userId?: string,
+  ): Promise<{
     id: string;
     sessionId: string;
     status: WhatsAppSessionStatusDto["status"];
@@ -155,7 +171,10 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async getConnectedSocket(id: string, userId?: string): Promise<{
+  async getConnectedSocket(
+    id: string,
+    userId?: string,
+  ): Promise<{
     session: WhatsAppSession;
     socket: WASocket;
   }> {
@@ -240,6 +259,10 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
       this.retiredSockets.add(managed.socket);
       this.sessions.delete(session.sessionId);
       managed.socket.end(undefined);
+      await this.leases.releaseSessionLease(
+        session.sessionId,
+        managed.leaseToken,
+      );
     }
 
     return this.startRuntime(session.sessionId);
@@ -257,6 +280,10 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
       await managed.socket.logout().catch(() => undefined);
       managed.socket.end(undefined);
       this.sessions.delete(session.sessionId);
+      await this.leases.releaseSessionLease(
+        session.sessionId,
+        managed.leaseToken,
+      );
     }
 
     await this.authStore.clear(session.sessionId);
@@ -283,12 +310,20 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
-    for (const session of this.sessions.values()) {
-      this.retiredSockets.add(session.socket);
-      session.socket.end(undefined);
+    if (this.leaseRenewalTimer) {
+      clearInterval(this.leaseRenewalTimer);
+      this.leaseRenewalTimer = undefined;
     }
 
+    const releases = [...this.sessions.entries()].map(
+      async ([sessionId, session]) => {
+        this.retiredSockets.add(session.socket);
+        session.socket.end(undefined);
+        await this.leases.releaseSessionLease(sessionId, session.leaseToken);
+      },
+    );
     this.sessions.clear();
+    await Promise.allSettled(releases);
   }
 
   private async startRuntime(
@@ -321,30 +356,46 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     sessionId: string,
   ): Promise<WhatsAppSessionStatusDto> {
     const current = await this.findSessionBySessionId(sessionId);
-    const session = await this.prisma.whatsAppSession.update({
-      where: {
-        id: current.id,
-      },
-      data: {
-        status: "CONNECTING",
-        disconnectedAt: null,
-      },
-    });
+    const lease = await this.leases.acquireSessionLease(sessionId);
 
-    const { state, saveCreds } = await this.authStore.getAuthState(
-      session.sessionId,
-    );
-    const socket = makeWASocket({
-      auth: state,
-      logger: this.logger,
-      printQRInTerminal: false,
-      syncFullHistory: false,
-      version: DEFAULT_CONNECTION_CONFIG.version,
-    });
+    if (!lease) {
+      throw new ServiceUnavailableException(
+        "WhatsApp session is owned by another worker.",
+      );
+    }
+
+    let session: WhatsAppSession;
+    let socket: WASocket;
+    let saveCreds: () => Promise<void>;
+
+    try {
+      session = await this.prisma.whatsAppSession.update({
+        where: {
+          id: current.id,
+        },
+        data: {
+          status: "CONNECTING",
+          disconnectedAt: null,
+        },
+      });
+      const authState = await this.authStore.getAuthState(session.sessionId);
+      saveCreds = authState.saveCreds;
+      socket = makeWASocket({
+        auth: authState.state,
+        logger: this.logger,
+        printQRInTerminal: false,
+        syncFullHistory: false,
+        version: DEFAULT_CONNECTION_CONFIG.version,
+      });
+    } catch (error) {
+      await this.leases.releaseSessionLease(sessionId, lease.leaseToken);
+      throw error;
+    }
 
     this.sessions.set(session.sessionId, {
       socket,
       listenerRegistered: false,
+      leaseToken: lease.leaseToken,
     });
     socket.ev.on("creds.update", saveCreds);
     this.registerMessageListener(session.sessionId, socket);
@@ -373,6 +424,9 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     if (await this.isSessionDeleted(sessionId)) {
       socket.end(undefined);
       this.sessions.delete(sessionId);
+      if (managed) {
+        await this.leases.releaseSessionLease(sessionId, managed.leaseToken);
+      }
       return;
     }
 
@@ -406,6 +460,9 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
       if (await this.isSessionDeleted(sessionId)) {
         socket.end(undefined);
         this.sessions.delete(sessionId);
+        if (managed) {
+          await this.leases.releaseSessionLease(sessionId, managed.leaseToken);
+        }
         return;
       }
 
@@ -432,6 +489,9 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
       this.sessions.delete(sessionId);
+      if (managed) {
+        await this.leases.releaseSessionLease(sessionId, managed.leaseToken);
+      }
 
       if (await this.isSessionDeleted(sessionId)) {
         await this.authStore.clear(sessionId);
@@ -467,23 +527,49 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const worker = this.workers.getCurrentWorker();
+    const workerContext = worker
+      ? ` workerId=${worker.id} workerName=${worker.name}`
+      : "";
+
     socket.ev.on("messages.upsert", ({ messages, type }) => {
       console.log(
-        `[WA_MESSAGE] upsert sessionId=${sessionId} type=${type} count=${messages.length}`,
+        `[WA_MESSAGE] upsert sessionId=${sessionId}${workerContext} type=${type} count=${messages.length}`,
       );
 
       for (const message of messages) {
         void this.messagesService
           .recordIncomingGroupMessage(sessionId, message)
-          .catch((error: unknown) => {
+          .catch(() => {
             console.log(
-              `[WA_MESSAGE] skipped reason=SAVE_FAILED_${this.readSafeErrorCode(error)}`,
+              `[WA_MESSAGE] failed sessionId=${sessionId}${workerContext}${message.key.remoteJid ? ` sourceGroupJid=${message.key.remoteJid}` : ""}${message.key.id ? ` messageId=${message.key.id}` : ""} reason=${ForwardSkipReason.SEND_FAILED}`,
             );
           });
       }
     });
     managed.listenerRegistered = true;
-    console.log(`[WA_LISTENER] registered sessionId=${sessionId}`);
+    console.log(
+      `[WA_LISTENER] registered sessionId=${sessionId}${workerContext}`,
+    );
+  }
+
+  private async renewActiveLeases(): Promise<void> {
+    for (const [sessionId, managed] of this.sessions) {
+      const renewed = await this.leases
+        .renewSessionLease(sessionId, managed.leaseToken)
+        .catch(() => false);
+
+      if (renewed) {
+        continue;
+      }
+
+      this.retiredSockets.add(managed.socket);
+      managed.socket.end(undefined);
+      this.sessions.delete(sessionId);
+      console.log(
+        `[WORKER_LEASE] refused sessionId=${sessionId} reason=LEASE_LOST`,
+      );
+    }
   }
 
   private async waitForQrOrConnection(
@@ -616,21 +702,6 @@ export class WhatsAppSessionManager implements OnModuleInit, OnModuleDestroy {
     }
 
     return undefined;
-  }
-
-  private readSafeErrorCode(error: unknown): string {
-    if (
-      error &&
-      typeof error === "object" &&
-      "code" in error &&
-      typeof error.code === "string"
-    ) {
-      return error.code.replace(/[^A-Z0-9_]/gi, "_").toUpperCase();
-    }
-
-    return error instanceof Error
-      ? error.name.replace(/[^A-Z0-9_]/gi, "_").toUpperCase()
-      : "UNKNOWN";
   }
 
   private normalizeRequiredString(value: string, fieldName: string): string {

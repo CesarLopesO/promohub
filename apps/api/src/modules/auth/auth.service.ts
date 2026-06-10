@@ -4,15 +4,18 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
+import { ConfigService } from "@nestjs/config";
 import * as bcrypt from "bcrypt";
 
 import { PrismaService } from "../../prisma.service";
+import { readReferralRewardCents } from "../referrals/referral.constants";
 import type { AuthenticatedUser } from "./auth.types";
 
 export type RegisterDto = {
   email: string;
   password: string;
   name?: string;
+  ref?: string;
 };
 
 export type LoginDto = {
@@ -25,27 +28,59 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly config: ConfigService,
   ) {}
 
   async register(body: RegisterDto): Promise<{ id: string; email: string }> {
     const email = this.normalizeEmail(body.email);
     const password = this.normalizePassword(body.password);
     const passwordHash = await bcrypt.hash(password, 12);
+    const referralCode = body.ref?.trim();
 
     try {
-      const user = await this.prisma.user.create({
-        data: {
-          email,
-          passwordHash,
-          name: body.name?.trim() || undefined,
-        },
-        select: {
-          id: true,
-          email: true,
-        },
-      });
+      const codeOwner = referralCode
+        ? await this.prisma.referralCode.findUnique({
+            where: { code: referralCode },
+            select: {
+              userId: true,
+              user: {
+                select: { email: true },
+              },
+            },
+          })
+        : null;
+      const referrerUserId =
+        codeOwner && codeOwner.user.email.toLowerCase() !== email
+          ? codeOwner.userId
+          : undefined;
 
-      return user;
+      return await this.prisma.$transaction(async (transaction) => {
+        const user = await transaction.user.create({
+          data: {
+            email,
+            passwordHash,
+            name: body.name?.trim() || undefined,
+            referredByUserId: referrerUserId,
+          },
+          select: {
+            id: true,
+            email: true,
+          },
+        });
+
+        if (referrerUserId && referrerUserId !== user.id) {
+          await transaction.referral.create({
+            data: {
+              referrerUserId,
+              referredUserId: user.id,
+              status: "PENDING_PAYMENT",
+              rewardCents: readReferralRewardCents(this.config),
+            },
+          });
+        }
+
+        return user;
+      });
     } catch (error) {
       if (
         typeof error === "object" &&

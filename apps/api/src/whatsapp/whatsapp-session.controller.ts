@@ -12,6 +12,7 @@ import {
 
 import type { AuthenticatedRequest } from "../modules/auth/auth.types";
 import { JwtAuthGuard } from "../modules/auth/jwt.guard";
+import { WhatsAppCommandProducer } from "../queues/whatsapp-command-producer";
 import { ConnectWhatsAppDto } from "./dto/connect-whatsapp.dto";
 import type {
   WhatsAppGroupDto,
@@ -21,6 +22,8 @@ import type { WhatsAppSessionStatusDto } from "./dto/whatsapp-session-status.dto
 import { WhatsAppGroupDiscoveryService } from "./groups/whatsapp-group-discovery.service";
 import { WhatsAppSessionManager } from "./session/whatsapp-session.manager";
 import type { WhatsAppSessionDebugDto } from "./session/whatsapp-session.manager";
+import { RateLimit } from "../common/security/rate-limit.decorator";
+import { RateLimitGuard } from "../common/security/rate-limit.guard";
 
 @UseGuards(JwtAuthGuard)
 @Controller("whatsapp/session")
@@ -29,14 +32,27 @@ export class WhatsAppSessionController {
     @Inject(WhatsAppSessionManager)
     private readonly sessionManager: WhatsAppSessionManager,
     private readonly groupDiscovery: WhatsAppGroupDiscoveryService,
+    private readonly commands: WhatsAppCommandProducer,
   ) {}
 
   @Post()
-  create(
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    name: "whatsapp-session-mutate",
+    limit: 30,
+    windowMs: 60 * 1000,
+    key: "user",
+  })
+  async create(
     @Body() body: ConnectWhatsAppDto = {},
     @Req() req: AuthenticatedRequest,
   ): Promise<WhatsAppSessionStatusDto> {
-    return this.sessionManager.createSession(req.user.id, body.sessionId);
+    const session = await this.sessionManager.createSession(
+      req.user.id,
+      body.sessionId,
+    );
+    await this.commands.publishSessionStart(session.sessionId);
+    return session;
   }
 
   @Get(":id/status")
@@ -69,27 +85,40 @@ export class WhatsAppSessionController {
   }
 
   @Post(":id/reconnect")
-  reconnect(
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    name: "whatsapp-session-mutate",
+    limit: 30,
+    windowMs: 60 * 1000,
+    key: "user",
+  })
+  async reconnect(
     @Param("id") id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<WhatsAppSessionStatusDto> {
-    return this.sessionManager.reconnectSession(id, req.user.id);
+    const session = await this.sessionManager.reconnectSession(id, req.user.id);
+    await this.commands.publishSessionReconnect(session.sessionId);
+    return session;
   }
 
   @Post(":id/groups/sync")
-  syncGroups(
+  async syncGroups(
     @Param("id") id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<WhatsAppGroupSyncResultDto> {
-    return this.groupDiscovery.syncGroups(id, req.user.id);
+    const result = await this.groupDiscovery.syncGroups(id, req.user.id);
+    await this.commands.publishGroupsSync(result.sessionId);
+    return result;
   }
 
   @Delete(":id")
-  delete(
+  async delete(
     @Param("id") id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<WhatsAppSessionStatusDto> {
-    return this.sessionManager.deleteSession(id, req.user.id);
+    const session = await this.sessionManager.deleteSession(id, req.user.id);
+    await this.commands.publishSessionStop(session.sessionId);
+    return session;
   }
 }
 

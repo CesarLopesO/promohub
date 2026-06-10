@@ -13,6 +13,8 @@ import { ConfigService } from "@nestjs/config";
 
 import { PrismaService } from "../../prisma.service";
 import { PlanLimitsService } from "../plans/plan-limits.service";
+import { ReferralsService } from "../referrals/referrals.service";
+import { hashReferralCpfCnpj, maskCpfCnpj } from "../referrals/referral-cpf";
 import { AsaasService, type AsaasWebhook } from "./asaas.service";
 
 type BillingPlanDto = {
@@ -77,8 +79,8 @@ const PLAN_PRICES: Record<Plan, number> = {
 };
 
 const PLAN_DESCRIPTIONS: Record<Plan, string> = {
-  FREE: "Comece grátis com marca Promohub.",
-  BASIC: "Para grupos pequenos sem propaganda.",
+  FREE: "Comece grátis com automação básica.",
+  BASIC: "Para operações em crescimento sem propaganda.",
   PRO: "Para operação profissional com múltiplos WhatsApps.",
 };
 
@@ -101,6 +103,7 @@ export class BillingService {
     private readonly asaas: AsaasService,
     private readonly config: ConfigService,
     private readonly planLimits: PlanLimitsService,
+    private readonly referrals: ReferralsService,
   ) {}
 
   plans(): BillingPlanDto[] {
@@ -137,9 +140,7 @@ export class BillingService {
     return {
       plan: user.plan,
       subscriptionStatus: user.subscriptionStatus,
-      cpfCnpjMasked: user.cpfCnpj
-        ? this.maskCpfCnpj(user.cpfCnpj)
-        : undefined,
+      cpfCnpjMasked: user.cpfCnpj ?? undefined,
       subscription: subscription
         ? this.toSubscriptionDto(subscription)
         : undefined,
@@ -172,6 +173,7 @@ export class BillingService {
         name: true,
         email: true,
         cpfCnpj: true,
+        cpfCnpjHash: true,
         subscriptionStatus: true,
       },
     });
@@ -180,14 +182,17 @@ export class BillingService {
       throw new BadRequestException("User not found.");
     }
 
-    const cpfCnpj = this.normalizeCpfCnpj(requestedCpfCnpj, user.cpfCnpj);
+    const cpfCnpj = this.normalizeCpfCnpj(requestedCpfCnpj);
+    const cpfCnpjMasked = maskCpfCnpj(cpfCnpj);
+    const cpfCnpjHash = hashReferralCpfCnpj(cpfCnpj, this.config);
 
-    if (cpfCnpj !== user.cpfCnpj) {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: { cpfCnpj },
-      });
-    }
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        cpfCnpj: cpfCnpjMasked,
+        cpfCnpjHash,
+      },
+    });
 
     const previous = await this.prisma.billingSubscription.findFirst({
       where: {
@@ -351,14 +356,31 @@ export class BillingService {
             }),
           ]
         : []),
-      this.prisma.billingWebhookEvent.update({
-        where: { id: event.id },
-        data: { processedAt: new Date() },
-      }),
     ]);
 
+    if (webhook.eventType === "PAYMENT_CONFIRMED") {
+      if (webhook.cpfCnpj) {
+        await this.prisma.user.update({
+          where: { id: subscription.userId },
+          data: {
+            cpfCnpj: maskCpfCnpj(webhook.cpfCnpj),
+            cpfCnpjHash: hashReferralCpfCnpj(webhook.cpfCnpj, this.config),
+          },
+        });
+      }
+
+      await this.referrals.confirmPayment(subscription.userId);
+    } else if (transition.resetPlan) {
+      await this.referrals.resetWaitingPeriod(subscription.userId);
+    }
+
+    await this.prisma.billingWebhookEvent.update({
+      where: { id: event.id },
+      data: { processedAt: new Date() },
+    });
+
     console.log(
-      `[BILLING_WEBHOOK] processed event=${webhook.eventType} subscriptionId=${subscription.id}`,
+      `[BILLING_WEBHOOK] processed eventId=${webhook.eventId} eventType=${webhook.eventType} providerPaymentId=${this.redactProviderId(webhook.payment.id)}`,
     );
 
     return { received: true, duplicate: false, processed: true };
@@ -398,6 +420,7 @@ export class BillingService {
         },
       }),
     ]);
+    await this.referrals.resetWaitingPeriod(userId);
 
     return {
       plan: Plan.FREE,
@@ -495,7 +518,7 @@ export class BillingService {
     throw new BadRequestException("Choose BASIC or PRO to start checkout.");
   }
 
-  private normalizeCpfCnpj(value: unknown, existing?: string | null): string {
+  private normalizeCpfCnpj(value: unknown): string {
     if (value !== undefined && typeof value !== "string") {
       throw new BadRequestException("CPF/CNPJ must be a string.");
     }
@@ -503,7 +526,7 @@ export class BillingService {
     const normalized =
       typeof value === "string" && value.trim()
         ? value.replace(/\D/g, "")
-        : existing?.replace(/\D/g, "");
+        : undefined;
 
     if (!normalized) {
       throw new BadRequestException("CPF/CNPJ is required for checkout.");
@@ -568,12 +591,6 @@ export class BillingService {
     );
   }
 
-  private maskCpfCnpj(value: string): string {
-    return value.length === 11
-      ? `***.***.***-${value.slice(-2)}`
-      : `**.***.***/****-${value.slice(-2)}`;
-  }
-
   private toSubscriptionDto(
     subscription: BillingSubscription,
   ): BillingSubscriptionDto {
@@ -592,6 +609,14 @@ export class BillingService {
     };
   }
 
+  private redactProviderId(value: string | undefined): string {
+    if (!value) {
+      return "none";
+    }
+
+    return value.length <= 4 ? "[REDACTED]" : `***${value.slice(-4)}`;
+  }
+
   private isUniqueConstraint(error: unknown): boolean {
     return (
       error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -608,7 +633,7 @@ export class BillingService {
       }`,
       this.formatGroupLimit("grupos origem", limits.maxSourceGroups),
       this.formatGroupLimit("grupos destino", limits.maxDestinationGroups),
-      limits.adsEnabled ? "propaganda Promohub" : "sem propaganda",
+      limits.adsEnabled ? "propaganda PeppaBot" : "sem propaganda",
     ];
   }
 

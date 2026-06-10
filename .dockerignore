@@ -1,0 +1,14 @@
+.git
+.idea
+.next
+.turbo
+backups
+coverage
+dist
+dist-test
+node_modules
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.production.example

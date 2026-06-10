@@ -1,0 +1,176 @@
+name: peppabot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PEPPABOT_POSTGRES_USER:-peppabot}
+      POSTGRES_PASSWORD: ${PEPPABOT_POSTGRES_PASSWORD:-change-me-before-production}
+      POSTGRES_DB: ${PEPPABOT_POSTGRES_DB:-peppabot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${PEPPABOT_POSTGRES_USER:-peppabot} -d ${PEPPABOT_POSTGRES_DB:-peppabot}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - backend
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      API_PORT: 3001
+      DATABASE_URL: ${PEPPABOT_DATABASE_URL:-postgresql://peppabot:change-me-before-production@postgres:5432/peppabot?schema=public}
+      REDIS_URL: ${PEPPABOT_REDIS_URL:-redis://redis:6379}
+      RATE_LIMIT_REDIS_URL: ${PEPPABOT_RATE_LIMIT_REDIS_URL:-redis://redis:6379}
+      RATE_LIMIT_ENABLED: ${PEPPABOT_RATE_LIMIT_ENABLED:-true}
+      ADMIN_AUDIT_LOG_ENABLED: ${PEPPABOT_ADMIN_AUDIT_LOG_ENABLED:-true}
+      WEB_URL: ${PEPPABOT_WEB_URL:-https://peppabot.example.com}
+      CORS_ORIGIN: ${PEPPABOT_CORS_ORIGIN:-https://peppabot.com}
+      JWT_SECRET: ${PEPPABOT_JWT_SECRET:-change-me-before-production}
+      JWT_EXPIRES_IN: ${PEPPABOT_JWT_EXPIRES_IN:-7d}
+      APP_ENCRYPTION_KEY: ${PEPPABOT_APP_ENCRYPTION_KEY:-replace-with-a-32-byte-base64-key}
+      ASAAS_API_KEY: ${PEPPABOT_ASAAS_API_KEY:-}
+      ASAAS_BASE_URL: ${PEPPABOT_ASAAS_BASE_URL:-https://api.asaas.com/v3}
+      ASAAS_WALLET_ID: ${PEPPABOT_ASAAS_WALLET_ID:-}
+      ASAAS_WEBHOOK_TOKEN: ${PEPPABOT_ASAAS_WEBHOOK_TOKEN:-}
+      MERCADO_LIVRE_AFFILIATE_GENERATOR_URL: ${PEPPABOT_MERCADO_LIVRE_AFFILIATE_GENERATOR_URL:-}
+      MERCADO_LIVRE_MODE: ${PEPPABOT_MERCADO_LIVRE_MODE:-real}
+      MERCADO_LIVRE_LEGACY_FORWARD_ENABLED: ${PEPPABOT_MERCADO_LIVRE_LEGACY_FORWARD_ENABLED:-false}
+      MERCADO_LIVRE_CANDIDATE_MIN_SCORE: ${PEPPABOT_MERCADO_LIVRE_CANDIDATE_MIN_SCORE:-70}
+      MERCADO_LIVRE_CANDIDATE_MIN_KEYWORDS: ${PEPPABOT_MERCADO_LIVRE_CANDIDATE_MIN_KEYWORDS:-2}
+      MERCADO_LIVRE_CANDIDATE_MIN_MARGIN: ${PEPPABOT_MERCADO_LIVRE_CANDIDATE_MIN_MARGIN:-20}
+      WHATSAPP_RUNTIME_MODE: ${PEPPABOT_WHATSAPP_RUNTIME_MODE:-embedded}
+      WORKER_NAME: ${PEPPABOT_WORKER_NAME:-api-embedded-1}
+      WORKER_MAX_SESSIONS: ${PEPPABOT_WORKER_MAX_SESSIONS:-25}
+      WORKER_HEARTBEAT_INTERVAL_MS: ${PEPPABOT_WORKER_HEARTBEAT_INTERVAL_MS:-10000}
+      WORKER_SESSION_LEASE_MS: ${PEPPABOT_WORKER_SESSION_LEASE_MS:-30000}
+      WORKER_STALE_AFTER_MS: ${PEPPABOT_WORKER_STALE_AFTER_MS:-45000}
+      WHATSAPP_QUEUE_COMMANDS_ENABLED: ${PEPPABOT_WHATSAPP_QUEUE_COMMANDS_ENABLED:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3001/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - backend
+
+  worker:
+    profiles: ["future-worker"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${PEPPABOT_DATABASE_URL:-postgresql://peppabot:change-me-before-production@postgres:5432/peppabot?schema=public}
+      REDIS_URL: ${PEPPABOT_REDIS_URL:-redis://redis:6379}
+      WORKER_NAME: ${PEPPABOT_DEDICATED_WORKER_NAME:-whatsapp-worker-1}
+      WORKER_MAX_SESSIONS: ${PEPPABOT_DEDICATED_WORKER_MAX_SESSIONS:-25}
+      WORKER_HEARTBEAT_INTERVAL_MS: ${PEPPABOT_WORKER_HEARTBEAT_INTERVAL_MS:-10000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: ${PEPPABOT_NEXT_PUBLIC_API_URL:-https://peppabot.example.com/api}
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: ${PEPPABOT_NEXT_PUBLIC_API_URL:-https://peppabot.example.com/api}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - frontend
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${PEPPABOT_HTTP_PORT:-80}:80"
+    volumes:
+      - ./infra/nginx/production.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - frontend
+      - backend
+
+networks:
+  frontend:
+  backend:
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -105,7 +105,7 @@ describe("AsaasService", () => {
       value: 79.9,
       nextDueDate: new Date().toISOString().slice(0, 10),
       cycle: "MONTHLY",
-      description: "Promohub BASIC",
+      description: "PeppaBot BASIC",
       externalReference: "billing-1",
     });
   });
@@ -118,6 +118,7 @@ describe("AsaasService", () => {
       if (config.url === "/subscriptions") {
         assert.equal(config.data?.customer, "cus_existing");
         assert.equal(config.data?.value, 99.9);
+        assert.equal(config.data?.description, "PeppaBot PRO");
         return { data: { id: "sub_2" } };
       }
 
@@ -348,5 +349,30 @@ describe("AsaasService", () => {
         },
       },
     );
+  });
+
+  it("extracts CPF/CNPJ for hashing and masks it in the stored payload", () => {
+    const service = makeService(async () => ({ data: {} }));
+    const result = service.handleWebhook({
+      id: "evt_cpf",
+      event: "PAYMENT_CONFIRMED",
+      payment: {
+        id: "pay_1",
+        subscription: "sub_1",
+        customer: { cpfCnpj: "123.456.789-09" },
+      },
+    });
+
+    assert.equal(result.cpfCnpj, "12345678909");
+    assert.equal(
+      (
+        (result.payload.payment as Record<string, unknown>).customer as Record<
+          string,
+          unknown
+        >
+      ).cpfCnpj,
+      "***.***.***-09",
+    );
+    assert.doesNotMatch(JSON.stringify(result.payload), /12345678909/);
   });
 });

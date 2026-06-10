@@ -13,6 +13,8 @@ import type { AuthenticatedRequest } from "../auth/auth.types";
 import { JwtAuthGuard } from "../auth/jwt.guard";
 import { PlanLimitsService } from "../plans/plan-limits.service";
 import { BillingService } from "./billing.service";
+import { RateLimit } from "../../common/security/rate-limit.decorator";
+import { RateLimitGuard } from "../../common/security/rate-limit.guard";
 
 @Controller("billing")
 export class BillingController {
@@ -39,8 +41,14 @@ export class BillingController {
     return this.planLimits.getUsage(req.user.id);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RateLimitGuard)
   @Post("checkout")
+  @RateLimit({
+    name: "billing-checkout",
+    limit: 10,
+    windowMs: 60 * 60 * 1000,
+    key: "user",
+  })
   checkout(
     @Req() req: AuthenticatedRequest,
     @Body() body: { plan?: unknown; cpfCnpj?: unknown },
@@ -61,6 +69,13 @@ export class BillingController {
   }
 
   @Post("webhook/asaas")
+  @UseGuards(RateLimitGuard)
+  @RateLimit({
+    name: "billing-webhook-asaas",
+    limit: 60,
+    windowMs: 60 * 1000,
+    key: "ip",
+  })
   webhookAsaas(
     @Headers("asaas-access-token") token: string | undefined,
     @Body() body: unknown,

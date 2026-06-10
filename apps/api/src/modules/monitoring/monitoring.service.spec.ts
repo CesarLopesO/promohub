@@ -195,10 +195,11 @@ function makePrisma() {
       }: {
         where?: Partial<StoredSession>;
         select?: Record<string, boolean>;
-      } = {}) => applySelect(
-        sessions.filter((row) => matchesWhere(row, where)),
-        select,
-      ),
+      } = {}) =>
+        applySelect(
+          sessions.filter((row) => matchesWhere(row, where)),
+          select,
+        ),
     },
     whatsAppGroup: {
       count: async ({ where }: { where?: Record<string, unknown> } = {}) =>
@@ -217,11 +218,14 @@ function makePrisma() {
         orderBy?: Record<string, "asc" | "desc">;
         take?: number;
         select?: Record<string, boolean>;
-      } = {}) => applySelect(
-        sortRows(messages.filter((row) => matchesWhere(row, where)), orderBy)
-          .slice(0, take),
-        select,
-      ),
+      } = {}) =>
+        applySelect(
+          sortRows(
+            messages.filter((row) => matchesWhere(row, where)),
+            orderBy,
+          ).slice(0, take),
+          select,
+        ),
       findFirst: async ({
         where,
         orderBy,
@@ -232,7 +236,10 @@ function makePrisma() {
         select?: Record<string, boolean>;
       } = {}) =>
         applySelect(
-          sortRows(messages.filter((row) => matchesWhere(row, where)), orderBy),
+          sortRows(
+            messages.filter((row) => matchesWhere(row, where)),
+            orderBy,
+          ),
           select,
         )[0] ?? null,
     },
@@ -253,11 +260,14 @@ function makePrisma() {
         orderBy?: Record<string, "asc" | "desc">;
         take?: number;
         select?: Record<string, boolean>;
-      } = {}) => applySelect(
-        sortRows(forwards.filter((row) => matchesWhere(row, where)), orderBy)
-          .slice(0, take),
-        select,
-      ),
+      } = {}) =>
+        applySelect(
+          sortRows(
+            forwards.filter((row) => matchesWhere(row, where)),
+            orderBy,
+          ).slice(0, take),
+          select,
+        ),
       findFirst: async ({
         where,
         orderBy,
@@ -268,14 +278,20 @@ function makePrisma() {
         select?: Record<string, boolean>;
       } = {}) =>
         applySelect(
-          sortRows(forwards.filter((row) => matchesWhere(row, where)), orderBy),
+          sortRows(
+            forwards.filter((row) => matchesWhere(row, where)),
+            orderBy,
+          ),
           select,
         )[0] ?? null,
     },
   };
 }
 
-function matchesWhere(row: Record<string, unknown>, where?: Record<string, unknown>) {
+function matchesWhere(
+  row: Record<string, unknown>,
+  where?: Record<string, unknown>,
+) {
   if (!where) {
     return true;
   }
@@ -351,8 +367,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 describe("MonitoringService", () => {
+  const workers = {
+    listWorkers: async () => [
+      {
+        id: "worker-1",
+        name: "api-embedded-1",
+        status: "ACTIVE",
+        lastHeartbeatAt: new Date("2026-06-01T12:00:00.000Z"),
+        currentSessions: 1,
+        maxSessions: 25,
+      },
+    ],
+  };
+
   it("returns health", async () => {
-    const service = new MonitoringService(makePrisma() as never);
+    const service = new MonitoringService(
+      makePrisma() as never,
+      workers as never,
+    );
 
     const health = await service.health();
 
@@ -368,7 +400,10 @@ describe("MonitoringService", () => {
   });
 
   it("returns stats scoped by user", async () => {
-    const service = new MonitoringService(makePrisma() as never);
+    const service = new MonitoringService(
+      makePrisma() as never,
+      workers as never,
+    );
 
     const stats = await service.stats("test-user");
 
@@ -404,7 +439,10 @@ describe("MonitoringService", () => {
   });
 
   it("returns recent forward errors", async () => {
-    const service = new MonitoringService(makePrisma() as never);
+    const service = new MonitoringService(
+      makePrisma() as never,
+      workers as never,
+    );
 
     const errors = await service.forwardErrors("test-user");
 
@@ -420,7 +458,10 @@ describe("MonitoringService", () => {
   });
 
   it("returns recent activity without rawMessage", async () => {
-    const service = new MonitoringService(makePrisma() as never);
+    const service = new MonitoringService(
+      makePrisma() as never,
+      workers as never,
+    );
 
     const activity = await service.recentActivity("test-user");
 

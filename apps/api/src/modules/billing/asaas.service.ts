@@ -56,6 +56,7 @@ export type AsaasCheckoutResult = {
 export type AsaasWebhook = {
   eventId: string;
   eventType: string;
+  cpfCnpj?: string;
   payment: {
     id?: string;
     subscriptionId?: string;
@@ -148,13 +149,9 @@ export class AsaasService {
       return;
     }
 
-    await this.request(
-      "put",
-      `/customers/${encodeURIComponent(customerId)}`,
-      {
-        cpfCnpj: user.cpfCnpj,
-      },
-    );
+    await this.request("put", `/customers/${encodeURIComponent(customerId)}`, {
+      cpfCnpj: user.cpfCnpj,
+    });
   }
 
   async createSubscription(
@@ -170,7 +167,7 @@ export class AsaasService {
       value: PLAN_VALUES[plan],
       nextDueDate: this.today(),
       cycle: "MONTHLY",
-      description: `Promohub ${plan}`,
+      description: `PeppaBot ${plan}`,
       externalReference: localSubscriptionId,
     };
 
@@ -232,6 +229,22 @@ export class AsaasService {
       value.payment && typeof value.payment === "object"
         ? (value.payment as Record<string, unknown>)
         : {};
+    const paymentCustomer =
+      payment.customer &&
+      typeof payment.customer === "object" &&
+      !Array.isArray(payment.customer)
+        ? (payment.customer as Record<string, unknown>)
+        : {};
+    const customer =
+      value.customer &&
+      typeof value.customer === "object" &&
+      !Array.isArray(value.customer)
+        ? (value.customer as Record<string, unknown>)
+        : {};
+    const cpfCnpj =
+      this.readCpfCnpj(payment.cpfCnpj) ??
+      this.readCpfCnpj(paymentCustomer.cpfCnpj) ??
+      this.readCpfCnpj(customer.cpfCnpj);
 
     if (!eventId || !eventType) {
       throw new BadRequestException("Asaas webhook must contain id and event.");
@@ -240,6 +253,7 @@ export class AsaasService {
     return {
       eventId,
       eventType,
+      ...(cpfCnpj ? { cpfCnpj } : {}),
       payment: {
         id: this.readString(payment.id),
         subscriptionId: this.readString(payment.subscription),
@@ -248,7 +262,7 @@ export class AsaasService {
           ? { dueDate: this.readString(payment.dueDate) }
           : {}),
       },
-      payload: value,
+      payload: this.sanitize(value) as Record<string, unknown>,
     };
   }
 
@@ -372,5 +386,14 @@ export class AsaasService {
 
   private readString(value: unknown): string | undefined {
     return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  }
+
+  private readCpfCnpj(value: unknown): string | undefined {
+    if (typeof value !== "string") {
+      return undefined;
+    }
+
+    const digits = value.replace(/\D/g, "");
+    return digits.length === 11 || digits.length === 14 ? digits : undefined;
   }
 }

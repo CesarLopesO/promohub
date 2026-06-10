@@ -7,6 +7,7 @@ import { Plan, Prisma, SubscriptionStatus } from "@prisma/client";
 
 import { PrismaService } from "../../prisma.service";
 import { hasSessionToken } from "../affiliate/affiliate-credential-secrets";
+import { WorkerNodesService } from "../workers/worker-nodes.service";
 
 const SENT_STATUSES = ["SENT", "SENT_TEXT_FALLBACK"];
 const ROLE_VALUES = ["USER", "ADMIN"];
@@ -35,7 +36,10 @@ type AdminUserUpdate = {
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly workers: WorkerNodesService,
+  ) {}
 
   async overview() {
     const [
@@ -64,6 +68,7 @@ export class AdminService {
       activeSubscriptions,
       overdueSubscriptions,
       canceledSubscriptions,
+      workers,
     ] = await Promise.all([
       this.prisma.user.count(),
       this.prisma.user.count({ where: { plan: "FREE" } }),
@@ -102,6 +107,7 @@ export class AdminService {
       this.prisma.billingSubscription.count({
         where: { status: "CANCELED" },
       }),
+      this.workers.listWorkers(),
     ]);
 
     return {
@@ -143,6 +149,15 @@ export class AdminService {
         active: activeSubscriptions,
         overdue: overdueSubscriptions,
         canceled: canceledSubscriptions,
+      },
+      workers: {
+        active: workers.filter((worker) => worker.status === "ACTIVE").length,
+        stale: workers.filter((worker) => worker.status === "STALE").length,
+        sessions: workers.reduce(
+          (total, worker) => total + worker.currentSessions,
+          0,
+        ),
+        nodes: workers,
       },
     };
   }
@@ -233,6 +248,18 @@ export class AdminService {
             phoneNumber: true,
             connectedAt: true,
             disconnectedAt: true,
+            workerId: true,
+            lastHeartbeatAt: true,
+            workerLeaseExpiresAt: true,
+            worker: {
+              select: {
+                name: true,
+                status: true,
+                lastHeartbeatAt: true,
+                currentSessions: true,
+                maxSessions: true,
+              },
+            },
             createdAt: true,
             updatedAt: true,
           },
@@ -404,6 +431,18 @@ export class AdminService {
         status: true,
         phoneNumber: true,
         connectedAt: true,
+        workerId: true,
+        lastHeartbeatAt: true,
+        workerLeaseExpiresAt: true,
+        worker: {
+          select: {
+            name: true,
+            status: true,
+            lastHeartbeatAt: true,
+            currentSessions: true,
+            maxSessions: true,
+          },
+        },
         updatedAt: true,
       },
     });

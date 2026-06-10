@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { UserPlus } from "lucide-react";
 
 import { Button } from "@promohub/ui/button";
@@ -10,11 +10,17 @@ import { apiFetch } from "@/src/lib/api";
 
 export default function RegisterPage() {
   const router = useRouter();
+  const [referralCode, setReferralCode] = useState<string>();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const ref = new URLSearchParams(window.location.search).get("ref")?.trim();
+    setReferralCode(ref || undefined);
+  }, []);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -22,7 +28,11 @@ export default function RegisterPage() {
     setError(null);
 
     try {
-      await apiFetch<{ id: string; email: string }>("/auth/register", {
+      const query = referralCode
+        ? `?ref=${encodeURIComponent(referralCode)}`
+        : "";
+
+      await apiFetch<{ id: string; email: string }>(`/auth/register${query}`, {
         method: "POST",
         auth: false,
         body: JSON.stringify({
@@ -52,6 +62,11 @@ export default function RegisterPage() {
           <p className="mt-2 text-sm text-slate-600">
             Automação de grupos de ofertas e afiliados.
           </p>
+          {referralCode ? (
+            <p className="mt-3 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+              Você está se cadastrando por uma indicação.
+            </p>
+          ) : null}
         </div>
 
         <form className="mt-6 space-y-4" onSubmit={onSubmit}>

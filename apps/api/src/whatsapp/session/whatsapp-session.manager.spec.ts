@@ -1,10 +1,67 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { ForbiddenException } from "@nestjs/common";
 import type { WAMessage } from "@whiskeysockets/baileys";
 
 import { WhatsAppSessionManager } from "./whatsapp-session.manager";
 
+const workers = {
+  registerEmbeddedWorker: async () => ({
+    id: "worker-1",
+    name: "api-embedded-1",
+  }),
+  getCurrentWorker: () => ({
+    id: "worker-1",
+    name: "api-embedded-1",
+  }),
+  heartbeatIntervalMs: () => 10_000,
+};
+
+const leases = {
+  acquireSessionLease: async () => ({
+    sessionId: "wa_test",
+    leaseToken: "a".repeat(64),
+    workerId: "worker-1",
+    workerName: "api-embedded-1",
+    expiresAt: new Date(Date.now() + 30_000),
+  }),
+  renewSessionLease: async () => true,
+  releaseSessionLease: async () => true,
+};
+
 describe("WhatsAppSessionManager listener", () => {
+  it("does not create a session when the plan limit is reached", async () => {
+    let createCalled = false;
+    const manager = new WhatsAppSessionManager(
+      {
+        whatsAppSession: {
+          create: async () => {
+            createCalled = true;
+          },
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {
+        assertCanCreateWhatsAppSession: async () => {
+          throw new ForbiddenException({
+            code: "PLAN_LIMIT_REACHED",
+            message: "Limite atingido.",
+          });
+        },
+      } as never,
+      workers as never,
+      leases as never,
+    );
+
+    await assert.rejects(
+      () => manager.createSession("test-user"),
+      ForbiddenException,
+    );
+    assert.equal(createCalled, false);
+  });
+
   it("registers one messages.upsert listener with the public sessionId", async () => {
     const handlers = new Map<string, (event: unknown) => void>();
     const calls: Array<{ sessionId: string; message: WAMessage }> = [];
@@ -28,11 +85,17 @@ describe("WhatsAppSessionManager listener", () => {
         },
       } as never,
       {} as never,
+      workers as never,
+      leases as never,
     );
     const internals = manager as unknown as {
       sessions: Map<
         string,
-        { socket: unknown; listenerRegistered: boolean }
+        {
+          socket: unknown;
+          listenerRegistered: boolean;
+          leaseToken: string;
+        }
       >;
       registerMessageListener: (sessionId: string, socket: unknown) => void;
     };
@@ -41,6 +104,7 @@ describe("WhatsAppSessionManager listener", () => {
     internals.sessions.set(sessionId, {
       socket,
       listenerRegistered: false,
+      leaseToken: "a".repeat(64),
     });
     internals.registerMessageListener(sessionId, socket);
     const firstHandler = handlers.get("messages.upsert");
@@ -97,16 +161,23 @@ describe("WhatsAppSessionManager listener", () => {
       {} as never,
       {} as never,
       {} as never,
+      workers as never,
+      leases as never,
     );
     const internals = manager as unknown as {
       sessions: Map<
         string,
-        { socket: unknown; listenerRegistered: boolean }
+        {
+          socket: unknown;
+          listenerRegistered: boolean;
+          leaseToken: string;
+        }
       >;
     };
     internals.sessions.set(sessionId, {
       socket: {},
       listenerRegistered: true,
+      leaseToken: "a".repeat(64),
     });
 
     assert.deepEqual(
@@ -123,5 +194,78 @@ describe("WhatsAppSessionManager listener", () => {
         routesCount: 2,
       },
     );
+  });
+
+  it("does not open the socket when session lease acquisition fails", async () => {
+    let authStateRequested = false;
+    const manager = new WhatsAppSessionManager(
+      {
+        whatsAppSession: {
+          findFirst: async () => ({
+            id: "session-record-id",
+            userId: "test-user",
+            sessionId: "wa_owned",
+            status: "CONNECTED",
+            deletedAt: null,
+          }),
+        },
+      } as never,
+      {
+        getAuthState: async () => {
+          authStateRequested = true;
+          throw new Error("must not be called");
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      workers as never,
+      {
+        ...leases,
+        acquireSessionLease: async () => null,
+      } as never,
+    );
+    const internals = manager as unknown as {
+      startRuntime: (sessionId: string) => Promise<unknown>;
+    };
+
+    await assert.rejects(() => internals.startRuntime("wa_owned"));
+    assert.equal(authStateRequested, false);
+  });
+
+  it("keeps CONNECTED status readable after an embedded restart", async () => {
+    const connectedAt = new Date("2026-06-10T12:00:00.000Z");
+    const manager = new WhatsAppSessionManager(
+      {
+        whatsAppSession: {
+          findFirst: async () => ({
+            id: "session-record-id",
+            userId: "test-user",
+            sessionId: "wa_connected",
+            status: "CONNECTED",
+            qrCode: null,
+            qrCodeDataUrl: null,
+            phoneNumber: "5511999999999",
+            connectedAt,
+            disconnectedAt: null,
+            deletedAt: null,
+            updatedAt: connectedAt,
+          }),
+        },
+      } as never,
+      {} as never,
+      {
+        setSession: async () => undefined,
+      } as never,
+      {} as never,
+      {} as never,
+      workers as never,
+      leases as never,
+    );
+
+    const status = await manager.readStatus("session-record-id", "test-user");
+
+    assert.equal(status.status, "CONNECTED");
+    assert.equal(status.connectedAt, connectedAt);
   });
 });

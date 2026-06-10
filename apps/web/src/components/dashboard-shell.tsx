@@ -6,6 +6,7 @@ import { useState } from "react";
 import {
   Activity,
   Gauge,
+  Gift,
   KeyRound,
   LogOut,
   CreditCard,
@@ -28,6 +29,7 @@ const navItems = [
   { href: "/dashboard/credentials", label: "Credenciais", icon: KeyRound },
   { href: "/dashboard/activity", label: "Atividade", icon: Activity },
   { href: "/dashboard/billing", label: "Plano", icon: CreditCard },
+  { href: "/dashboard/referrals", label: "Indique e Ganhe", icon: Gift },
 ];
 
 const adminNavItem = { href: "/admin", label: "Admin", icon: Shield };
@@ -147,11 +149,7 @@ function SidebarContent({
         </p>
         <p className="mt-1 text-xs text-slate-500">User Dashboard</p>
       </div>
-      <DashboardNav
-        isAdmin={isAdmin}
-        pathname={pathname}
-        onLogout={onLogout}
-      />
+      <DashboardNav isAdmin={isAdmin} pathname={pathname} onLogout={onLogout} />
     </>
   );
 }

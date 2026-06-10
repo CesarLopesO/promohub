@@ -8,9 +8,12 @@ import { AuthModule } from "./modules/auth/auth.module";
 import { BillingModule } from "./modules/billing/billing.module";
 import { MonitoringModule } from "./modules/monitoring/monitoring.module";
 import { MessageRoutesModule } from "./modules/routes/message-routes.module";
+import { ReferralsModule } from "./modules/referrals/referrals.module";
 import { ProductExtractorModule } from "./products/product-extractor.module";
 import { PrismaService } from "./prisma.service";
 import { WhatsAppSessionModule } from "./whatsapp/whatsapp-session.module";
+import { SettingsModule } from "./modules/settings/settings.module";
+import { SecurityModule } from "./common/security/security.module";
 
 @Module({
   imports: [
@@ -18,13 +21,16 @@ import { WhatsAppSessionModule } from "./whatsapp/whatsapp-session.module";
       isGlobal: true,
       envFilePath: ["apps/api/.env", ".env"],
     }),
+    SecurityModule,
     AdminModule,
     AuthModule,
     AffiliateModule,
     BillingModule,
     MonitoringModule,
     MessageRoutesModule,
+    ReferralsModule,
     ProductExtractorModule,
+    SettingsModule,
     WhatsAppSessionModule,
   ],
   controllers: [AppController],

@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BadRequestException, ConflictException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from "@nestjs/common";
 import { Plan, type MessageRoute } from "@prisma/client";
 
 import { Marketplace } from "../affiliate/helpers/detect-marketplace";
+import { ForwardSkipReason } from "./forward-skip-reason";
 import { MessageForwardingService } from "./message-forwarding.service";
 import { MessageRoutesService } from "./message-routes.service";
 
-const FREE_PLAN_SIGNATURE =
-  "🤖 Automatizado por PeppaBot\n" +
-  "Automação de grupos de ofertas e afiliados\n" +
-  "peppabot.com";
+const FREE_PLAN_SIGNATURE = "🤖 Automatizado por PeppaBot";
 
 type StoredMessage = {
   id: string;
@@ -39,6 +41,7 @@ type StoredForwarded = {
   mediaForwarded: boolean;
   sentProviderMessageId?: string | null;
   sentProviderRaw?: unknown;
+  reason?: string | null;
   sentAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -57,6 +60,22 @@ function makeRoute(overrides: Partial<MessageRoute> = {}): MessageRoute {
     updatedAt: new Date("2026-06-01T12:00:00.000Z"),
     ...overrides,
   };
+}
+
+async function captureLogs<T>(
+  work: () => Promise<T>,
+): Promise<{ logs: string[]; result: T }> {
+  const originalLog = console.log;
+  const logs: string[] = [];
+  console.log = (...values: unknown[]) => {
+    logs.push(values.map(String).join(" "));
+  };
+
+  try {
+    return { logs, result: await work() };
+  } finally {
+    console.log = originalLog;
+  }
 }
 
 function makeService(options?: {
@@ -82,6 +101,7 @@ function makeService(options?: {
   sendMessageResult?: unknown;
   generatedInviteUrls?: Record<string, string | null>;
   userPlan?: Plan;
+  planLimitError?: ForbiddenException;
 }) {
   const routes = [...(options?.routes ?? [])];
   const messages = options?.messages ?? [];
@@ -305,7 +325,11 @@ function makeService(options?: {
     inviteService as never,
   );
   const planLimits = {
-    assertCanCreateRoute: async () => undefined,
+    assertCanCreateRoute: async () => {
+      if (options?.planLimitError) {
+        throw options.planLimitError;
+      }
+    },
   };
 
   return {
@@ -398,6 +422,70 @@ describe("MessageRoutesService", () => {
 
     assert.equal(route.id, "route-id");
     assert.equal(route.isActive, true);
+  });
+
+  it("does not reactivate a route when the plan limit is reached", async () => {
+    const storedRoute = makeRoute({ isActive: false });
+    const { service } = makeService({
+      routes: [storedRoute],
+      planLimitError: new ForbiddenException({
+        code: "PLAN_LIMIT_REACHED",
+        message: "Limite atingido.",
+      }),
+    });
+
+    await assert.rejects(
+      () =>
+        service.create({
+          userId: "test-user",
+          sessionId: "wa_xxx",
+          sourceGroupJid: "source@g.us",
+          destinationGroupJid: "destination@g.us",
+        }),
+      ForbiddenException,
+    );
+    assert.equal(storedRoute.isActive, false);
+  });
+
+  it("does not create a route when the plan limit is reached", async () => {
+    const { service } = makeService({
+      planLimitError: new ForbiddenException({
+        code: "PLAN_LIMIT_REACHED",
+        message: "Limite atingido.",
+      }),
+    });
+
+    await assert.rejects(
+      () =>
+        service.create({
+          userId: "test-user",
+          sessionId: "wa_xxx",
+          sourceGroupJid: "source@g.us",
+          destinationGroupJid: "destination@g.us",
+        }),
+      ForbiddenException,
+    );
+    await assert.rejects(
+      () => service.findOne("route-1", "test-user"),
+      /route not found/i,
+    );
+  });
+
+  it("does not activate a route when the plan limit is reached", async () => {
+    const storedRoute = makeRoute({ isActive: false });
+    const { service } = makeService({
+      routes: [storedRoute],
+      planLimitError: new ForbiddenException({
+        code: "PLAN_LIMIT_REACHED",
+        message: "Limite atingido.",
+      }),
+    });
+
+    await assert.rejects(
+      () => service.update(storedRoute.id, { isActive: true }, "test-user"),
+      ForbiddenException,
+    );
+    assert.equal(storedRoute.isActive, false);
   });
 
   it("blocks source and destination with the same group", async () => {
@@ -856,13 +944,20 @@ describe("MessageRoutesService", () => {
       ],
     });
 
-    const response = await forwardingService.forwardMessageById(
-      "test-user",
-      "message-id",
-      { mode: "auto" },
+    const { logs, result: response } = await captureLogs(() =>
+      forwardingService.forwardMessageById("test-user", "message-id", {
+        mode: "auto",
+      }),
     );
 
     assert.equal(response.sentCount, 0);
+    assert.ok(
+      logs.some(
+        (log) =>
+          log.includes("[AUTO_FORWARD] skipped") &&
+          log.includes(`reason=${ForwardSkipReason.NO_ACTIVE_ROUTES}`),
+      ),
+    );
     assert.deepEqual(sentMessages, []);
   });
 
@@ -1106,6 +1201,80 @@ describe("MessageRoutesService", () => {
     assert.equal(forwarded[0]?.status, "SENT");
   });
 
+  it("uses AMAZON_GENERATION_FAILED for Amazon provider failures", async () => {
+    const { forwardingService, forwarded } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "https://amzn.to/failure",
+          links: ["https://amzn.to/failure"],
+        },
+      ],
+      rewriteResults: [
+        {
+          originalUrl: "https://amzn.to/failure",
+          rewrittenUrl: "https://amzn.to/failure",
+          marketplace: Marketplace.AMAZON,
+          changed: false,
+          canForward: false,
+          reason: "AMAZON_SHORT_URL_RESOLUTION_FAILED",
+        },
+      ],
+    });
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+      { mode: "auto" },
+    );
+
+    assert.equal(
+      response.results[0]?.reason,
+      ForwardSkipReason.AMAZON_GENERATION_FAILED,
+    );
+    assert.equal(
+      forwarded[0]?.reason,
+      ForwardSkipReason.AMAZON_GENERATION_FAILED,
+    );
+  });
+
+  it("uses AFFILIATE_CREDENTIAL_MISSING when Amazon tag is absent", async () => {
+    const { forwardingService, forwarded } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "https://amzn.to/missing-tag",
+          links: ["https://amzn.to/missing-tag"],
+        },
+      ],
+      rewriteResults: [
+        {
+          originalUrl: "https://amzn.to/missing-tag",
+          rewrittenUrl: "https://amzn.to/missing-tag",
+          marketplace: Marketplace.AMAZON,
+          changed: false,
+          canForward: false,
+          reason: "AMAZON_TAG_NOT_CONFIGURED",
+        },
+      ],
+    });
+
+    await forwardingService.forwardMessageById("test-user", "message-id", {
+      mode: "auto",
+    });
+
+    assert.equal(
+      forwarded[0]?.reason,
+      ForwardSkipReason.AFFILIATE_CREDENTIAL_MISSING,
+    );
+  });
+
   it("auto forward skips when any Mercado Livre link fails conversion", async () => {
     const { forwardingService, forwarded, sentMessages } = makeService({
       routes: [makeRoute()],
@@ -1138,17 +1307,33 @@ describe("MessageRoutesService", () => {
       ],
     });
 
-    const response = await forwardingService.forwardMessageById(
-      "test-user",
-      "message-id",
-      { mode: "auto" },
+    const { logs, result: response } = await captureLogs(() =>
+      forwardingService.forwardMessageById("test-user", "message-id", {
+        mode: "auto",
+      }),
     );
 
     assert.equal(response.sentCount, 0);
     assert.equal(response.skippedCount, 1);
     assert.equal(response.results[0]?.error, "MERCADO_LIVRE_GENERATION_FAILED");
+    assert.equal(
+      response.results[0]?.reason,
+      ForwardSkipReason.ML_GENERATION_FAILED,
+    );
     assert.equal(forwarded[0]?.status, "SKIPPED");
+    assert.equal(forwarded[0]?.reason, ForwardSkipReason.ML_GENERATION_FAILED);
     assert.equal(forwarded[0]?.error, "MERCADO_LIVRE_GENERATION_FAILED");
+    assert.ok(
+      logs.some(
+        (log) =>
+          log.includes("[MESSAGE_FORWARD] skipped") &&
+          log.includes("sessionId=wa_xxx") &&
+          log.includes("sourceGroupJid=source@g.us") &&
+          log.includes("destinationGroupJid=destination@g.us") &&
+          log.includes("messageId=message-id") &&
+          log.includes(`reason=${ForwardSkipReason.ML_GENERATION_FAILED}`),
+      ),
+    );
     assert.deepEqual(sentMessages, []);
   });
 
@@ -1467,15 +1652,30 @@ describe("MessageRoutesService", () => {
       throw new Error("download failed");
     };
 
-    const response = await forwardingService.forwardMessageById(
-      "test-user",
-      "message-id",
+    const { logs, result: response } = await captureLogs(() =>
+      forwardingService.forwardMessageById("test-user", "message-id"),
     );
 
     assert.equal(response.results[0]?.status, "SENT_TEXT_FALLBACK");
     assert.equal(response.results[0]?.sentMessageType, "text_fallback");
     assert.equal(forwarded[0]?.status, "SENT_TEXT_FALLBACK");
     assert.equal(forwarded[0]?.mediaForwarded, false);
+    assert.equal(forwarded[0]?.reason, ForwardSkipReason.MEDIA_DOWNLOAD_FAILED);
+    assert.equal(
+      response.results[0]?.reason,
+      ForwardSkipReason.MEDIA_DOWNLOAD_FAILED,
+    );
+    assert.ok(
+      logs.some(
+        (log) =>
+          log.includes("[FORWARD_MEDIA] fallback") &&
+          log.includes("sessionId=wa_xxx") &&
+          log.includes("sourceGroupJid=source@g.us") &&
+          log.includes("destinationGroupJid=destination@g.us") &&
+          log.includes("messageId=message-id") &&
+          log.includes(`reason=${ForwardSkipReason.MEDIA_DOWNLOAD_FAILED}`),
+      ),
+    );
     assert.deepEqual(sentMessages[0], {
       jid: "destination@g.us",
       content: {
@@ -1582,7 +1782,7 @@ describe("MessageRoutesService", () => {
   });
 
   it("rejects forward when the session is not connected", async () => {
-    const { service } = makeService({
+    const { service, forwarded } = makeService({
       routes: [makeRoute()],
       messages: [
         {
@@ -1595,9 +1795,19 @@ describe("MessageRoutesService", () => {
       sessionStatus: "DISCONNECTED",
     });
 
-    await assert.rejects(
-      () => service.forward("message-id", { userId: "test-user" }),
-      /not connected/,
+    const { logs } = await captureLogs(async () => {
+      await assert.rejects(
+        () => service.forward("message-id", { userId: "test-user" }),
+        /not connected/,
+      );
+    });
+    assert.equal(forwarded[0]?.reason, ForwardSkipReason.SESSION_DISCONNECTED);
+    assert.ok(
+      logs.some(
+        (log) =>
+          log.includes("[MESSAGE_FORWARD] skipped") &&
+          log.includes(`reason=${ForwardSkipReason.SESSION_DISCONNECTED}`),
+      ),
     );
   });
 
@@ -1621,11 +1831,12 @@ describe("MessageRoutesService", () => {
 
     assert.equal(response.failedCount, 1);
     assert.equal(forwarded[0]?.status, "FAILED");
+    assert.equal(forwarded[0]?.reason, ForwardSkipReason.SEND_FAILED);
     assert.equal(forwarded[0]?.error, "send failed");
   });
 
   it("avoids duplicate successful forwards", async () => {
-    const { service, sentMessages } = makeService({
+    const { service, forwarded, sentMessages } = makeService({
       routes: [makeRoute()],
       messages: [
         {
@@ -1663,6 +1874,11 @@ describe("MessageRoutesService", () => {
 
     assert.equal(response.skippedCount, 1);
     assert.equal(response.results[0]?.status, "SKIPPED_ALREADY_SENT");
+    assert.equal(
+      response.results[0]?.reason,
+      ForwardSkipReason.DUPLICATE_FORWARD,
+    );
+    assert.equal(forwarded.at(-1)?.reason, ForwardSkipReason.DUPLICATE_FORWARD);
     assert.deepEqual(sentMessages, []);
   });
 

@@ -19,6 +19,7 @@ type StoredUser = {
   email: string;
   passwordHash: string;
   name: string | null;
+  referredByUserId: string | null;
   role: string;
   plan: string;
   subscriptionStatus: string;
@@ -33,49 +34,82 @@ describe("Auth JWT integration", () => {
   let jwtService: JwtService;
   let guard: JwtAuthGuard;
   const users: StoredUser[] = [];
+  const referralCodes: Array<{
+    userId: string;
+    code: string;
+  }> = [];
+  const referrals: Array<{
+    referrerUserId: string;
+    referredUserId: string;
+    status: string;
+    rewardCents: number;
+  }> = [];
   const now = new Date("2026-06-01T12:00:00.000Z");
 
   before(async () => {
+    const createUser = async ({
+      data,
+      select,
+    }: {
+      data: Pick<StoredUser, "email" | "passwordHash"> & {
+        name?: string | null;
+        referredByUserId?: string;
+      };
+      select?: object;
+    }) => {
+      if (users.some((user) => user.email === data.email)) {
+        throw Object.assign(new Error("Unique constraint failed"), {
+          code: "P2002",
+        });
+      }
+
+      const user = {
+        id: `user-${users.length + 1}`,
+        email: data.email,
+        passwordHash: data.passwordHash,
+        name: data.name ?? null,
+        referredByUserId: data.referredByUserId ?? null,
+        role: "USER",
+        plan: "FREE",
+        subscriptionStatus: "NONE",
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
+      };
+      users.push(user);
+
+      if (select) {
+        return {
+          id: user.id,
+          email: user.email,
+        };
+      }
+
+      return user;
+    };
+    const createReferral = async ({
+      data,
+    }: {
+      data: (typeof referrals)[number];
+    }) => {
+      if (
+        referrals.some((item) => item.referredUserId === data.referredUserId)
+      ) {
+        throw Object.assign(new Error("Unique constraint failed"), {
+          code: "P2002",
+        });
+      }
+
+      referrals.push(data);
+      return data;
+    };
+    const transactionClient = {
+      user: { create: createUser },
+      referral: { create: createReferral },
+    };
     const prisma = {
       user: {
-        create: async ({
-          data,
-          select,
-        }: {
-          data: Pick<StoredUser, "email" | "passwordHash"> & {
-            name?: string | null;
-          };
-          select?: object;
-        }) => {
-          if (users.some((user) => user.email === data.email)) {
-            throw Object.assign(new Error("Unique constraint failed"), {
-              code: "P2002",
-            });
-          }
-
-          const user = {
-            id: `user-${users.length + 1}`,
-            email: data.email,
-            passwordHash: data.passwordHash,
-            name: data.name ?? null,
-            role: "USER",
-            plan: "FREE",
-            subscriptionStatus: "NONE",
-            isActive: true,
-            createdAt: now,
-            updatedAt: now,
-          };
-          users.push(user);
-
-          if (select) {
-            return {
-              id: user.id,
-              email: user.email,
-            };
-          }
-
-          return user;
-        },
+        create: createUser,
         findUnique: async ({
           where,
         }: {
@@ -87,6 +121,27 @@ describe("Auth JWT integration", () => {
               (where.id && user.id === where.id),
           ) ?? null,
       },
+      referralCode: {
+        findUnique: async ({ where }: { where: { code: string } }) => {
+          const referralCode = referralCodes.find(
+            (item) => item.code === where.code,
+          );
+          const owner = users.find((user) => user.id === referralCode?.userId);
+
+          return referralCode && owner
+            ? {
+                userId: referralCode.userId,
+                user: { email: owner.email },
+              }
+            : null;
+        },
+      },
+      referral: {
+        create: createReferral,
+      },
+      $transaction: async <T>(
+        callback: (transaction: typeof transactionClient) => Promise<T>,
+      ) => callback(transactionClient),
     };
 
     moduleRef = await Test.createTestingModule({
@@ -143,6 +198,63 @@ describe("Auth JWT integration", () => {
     assert.match(result.accessToken, /^[^.]+\.[^.]+\.[^.]+$/);
   });
 
+  it("registers a referred user with a direct immutable link", async () => {
+    referralCodes.push({
+      userId: "user-1",
+      code: "REFERRER1",
+    });
+
+    const referred = await authService.register({
+      email: "referred@example.com",
+      password: "123456",
+      ref: "REFERRER1",
+    });
+
+    assert.equal(referred.email, "referred@example.com");
+    assert.equal(
+      users.find((user) => user.id === referred.id)?.referredByUserId,
+      "user-1",
+    );
+    assert.deepEqual(referrals, [
+      {
+        referrerUserId: "user-1",
+        referredUserId: referred.id,
+        status: "PENDING_PAYMENT",
+        rewardCents: 3000,
+      },
+    ]);
+  });
+
+  it("does not change an existing account or accept self-referral", async () => {
+    const originalReferrer = users[0]?.referredByUserId;
+
+    await assert.rejects(
+      () =>
+        authService.register({
+          email: "user@email.com",
+          password: "123456",
+          ref: "REFERRER1",
+        }),
+      /Email already registered/,
+    );
+    assert.equal(users[0]?.referredByUserId, originalReferrer);
+    assert.equal(referrals.length, 1);
+  });
+
+  it("continues registration when the referral code is invalid", async () => {
+    const user = await authService.register({
+      email: "no-ref@example.com",
+      password: "123456",
+      ref: "INVALID",
+    });
+
+    assert.equal(
+      users.find((stored) => stored.id === user.id)?.referredByUserId,
+      null,
+    );
+    assert.equal(referrals.length, 1);
+  });
+
   it("accepts a valid JWT", async () => {
     const accessToken = await login();
     const payload = await jwtService.verifyAsync(accessToken, {
@@ -178,12 +290,9 @@ describe("Auth JWT integration", () => {
   it("rejects a protected route without token", async () => {
     const { context } = makeHttpContext();
 
-    await assert.rejects(
-      async () => {
-        await guard.canActivate(context);
-      },
-      UnauthorizedException,
-    );
+    await assert.rejects(async () => {
+      await guard.canActivate(context);
+    }, UnauthorizedException);
   });
 
   it("accepts a protected route with token", async () => {

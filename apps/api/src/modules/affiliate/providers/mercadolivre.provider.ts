@@ -311,7 +311,7 @@ export class MercadoLivreAffiliateProvider implements AffiliateProvider {
           method,
           redirect: "follow",
           headers: {
-            "User-Agent": "PromoHub/1.0",
+            "User-Agent": "PeppaBot/1.0",
           },
         });
 
@@ -335,7 +335,7 @@ export class MercadoLivreAffiliateProvider implements AffiliateProvider {
           method,
           redirect: "follow",
           headers: {
-            "User-Agent": "PromoHub/1.0",
+            "User-Agent": "PeppaBot/1.0",
           },
         });
         const finalUrl = response.url;

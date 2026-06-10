@@ -2,8 +2,7 @@ type JsonRecord = Record<string, unknown>;
 
 const REQUEST_HEADERS = {
   "accept-language": "pt-BR,pt;q=0.9,en;q=0.8",
-  "user-agent":
-    "Mozilla/5.0 (compatible; PromohubBot/0.1; +https://promohub.local)",
+  "user-agent": "Mozilla/5.0 (compatible; PeppaBot/1.0)",
 };
 
 export async function fetchHtml(url: URL): Promise<string> {

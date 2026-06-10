@@ -6,7 +6,7 @@ export class AppController {
   health() {
     return {
       status: "ok",
-      service: "promohub-api",
+      service: "peppabot-api",
       timestamp: new Date().toISOString(),
     };
   }

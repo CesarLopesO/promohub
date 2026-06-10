@@ -29,20 +29,81 @@ enum SubscriptionStatus {
   CANCELED
 }
 
+enum WorkerNodeStatus {
+  STARTING
+  ACTIVE
+  DRAINING
+  STALE
+  STOPPED
+}
+
+enum ReferralStatus {
+  PENDING_SIGNUP
+  PENDING_PAYMENT
+  PENDING_WAITING_PERIOD
+  NEEDS_REVIEW
+  ELIGIBLE
+  PAID
+  REJECTED
+}
+
+model WorkerNode {
+  id              String            @id @default(cuid())
+  name            String            @unique
+  status          WorkerNodeStatus  @default(STARTING)
+  lastHeartbeatAt DateTime
+  maxSessions     Int
+  currentSessions Int               @default(0)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  sessions        WhatsAppSession[]
+
+  @@index([status, lastHeartbeatAt])
+}
+
 model User {
-  id                 String             @id @default(cuid())
-  email              String             @unique
-  passwordHash       String
-  name               String?
-  cpfCnpj            String?
-  role               String             @default("USER")
-  plan               Plan               @default(FREE)
-  subscriptionStatus SubscriptionStatus @default(NONE)
-  isActive           Boolean            @default(true)
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
-  subscriptions      Subscription[]
+  id                   String                @id @default(cuid())
+  email                String                @unique
+  passwordHash         String
+  name                 String?
+  cpfCnpj              String?
+  cpfCnpjHash          String?
+  referredByUserId     String?
+  role                 String                @default("USER")
+  plan                 Plan                  @default(FREE)
+  subscriptionStatus   SubscriptionStatus    @default(NONE)
+  isActive             Boolean               @default(true)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  subscriptions        Subscription[]
   billingSubscriptions BillingSubscription[]
+  referralCode         ReferralCode?
+  referralsMade        Referral[]            @relation("ReferralReferrer")
+  referralReceived     Referral?             @relation("ReferralReferred")
+  referredByUser       User?                 @relation("UserReferrals", fields: [referredByUserId], references: [id], onDelete: SetNull)
+  referredUsers        User[]                @relation("UserReferrals")
+  adminAuditLogs        AdminAuditLog[]
+
+  @@index([referredByUserId])
+  @@index([cpfCnpjHash])
+}
+
+model AdminAuditLog {
+  id          String   @id @default(cuid())
+  adminUserId String
+  action      String
+  targetType  String
+  targetId    String?
+  metadata    Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+  adminUser   User     @relation(fields: [adminUserId], references: [id], onDelete: Restrict)
+
+  @@index([adminUserId])
+  @@index([action])
+  @@index([targetType, targetId])
+  @@index([createdAt])
 }
 
 model Subscription {
@@ -108,27 +169,35 @@ model BillingWebhookEvent {
 }
 
 model WhatsAppSession {
-  id             String                   @id @default(cuid())
-  userId         String
-  sessionId      String                   @unique
-  status         WhatsAppConnectionStatus @default(DISCONNECTED)
-  qrCode         String?
-  qrCodeDataUrl  String?
-  phoneNumber    String?
-  connectedAt    DateTime?
-  disconnectedAt DateTime?
-  lastQrAt       DateTime?
-  deletedAt      DateTime?
-  createdAt      DateTime                 @default(now())
-  updatedAt      DateTime                 @updatedAt
-  authStates     WhatsAppAuthState[]
-  groups         WhatsAppGroup[]
-  messages       WhatsAppMessage[]
+  id                   String                   @id @default(cuid())
+  userId               String
+  sessionId            String                   @unique
+  status               WhatsAppConnectionStatus @default(DISCONNECTED)
+  qrCode               String?
+  qrCodeDataUrl        String?
+  phoneNumber          String?
+  connectedAt          DateTime?
+  disconnectedAt       DateTime?
+  lastQrAt             DateTime?
+  deletedAt            DateTime?
+  workerId             String?
+  lastHeartbeatAt      DateTime?
+  workerLeaseExpiresAt DateTime?
+  workerLeaseToken     String?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+  authStates           WhatsAppAuthState[]
+  groups               WhatsAppGroup[]
+  messages             WhatsAppMessage[]
+  worker               WorkerNode?              @relation(fields: [workerId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([userId, deletedAt])
   @@index([status])
   @@index([deletedAt])
+  @@index([workerId])
+  @@index([workerId, lastHeartbeatAt])
+  @@index([workerLeaseExpiresAt])
 }
 
 model WhatsAppAuthState {
@@ -163,19 +232,19 @@ model WhatsAppGroup {
 }
 
 model WhatsAppMessage {
-  id          String          @id @default(cuid())
-  sessionId   String
-  groupJid    String
-  senderJid   String?
-  messageId   String          @unique
-  messageType String
-  text        String?         @db.Text
-  hasMedia    Boolean         @default(false)
-  rawMessage  Json?
-  links       Json?
+  id           String          @id @default(cuid())
+  sessionId    String
+  groupJid     String
+  senderJid    String?
+  messageId    String          @unique
+  messageType  String
+  text         String?         @db.Text
+  hasMedia     Boolean         @default(false)
+  rawMessage   Json?
+  links        Json?
   marketplaces Json?
-  createdAt   DateTime        @default(now())
-  session     WhatsAppSession @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+  createdAt    DateTime        @default(now())
+  session      WhatsAppSession @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
 
   @@index([sessionId])
   @@index([groupJid])
@@ -232,16 +301,51 @@ model AffiliateLinkCache {
   @@index([expiresAt])
 }
 
+model AppSetting {
+  key       String   @id
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ReferralCode {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  code      String   @unique
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Referral {
+  id                 String         @id @default(cuid())
+  referrerUserId     String
+  referredUserId     String         @unique
+  status             ReferralStatus @default(PENDING_PAYMENT)
+  rewardCents        Int            @default(3000)
+  createdAt          DateTime       @default(now())
+  paymentConfirmedAt DateTime?
+  eligibleAt         DateTime?
+  paidAt             DateTime?
+  notes              String?        @db.Text
+  antifraudReason    String?        @db.Text
+  referrer           User           @relation("ReferralReferrer", fields: [referrerUserId], references: [id], onDelete: Restrict)
+  referred           User           @relation("ReferralReferred", fields: [referredUserId], references: [id], onDelete: Restrict)
+
+  @@index([referrerUserId])
+  @@index([status])
+  @@index([eligibleAt])
+}
+
 model MessageRoute {
-  id                  String   @id @default(cuid())
-  userId              String
-  sessionId           String
-  sourceGroupJid      String
-  destinationGroupJid String
+  id                   String   @id @default(cuid())
+  userId               String
+  sessionId            String
+  sourceGroupJid       String
+  destinationGroupJid  String
   destinationInviteUrl String?
-  isActive            Boolean  @default(true)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   @@unique([userId, sessionId, sourceGroupJid, destinationGroupJid])
   @@index([userId])
@@ -251,28 +355,31 @@ model MessageRoute {
 }
 
 model ForwardedMessage {
-  id                  String    @id @default(cuid())
-  userId              String
-  sessionId           String
-  sourceMessageId     String
-  sourceGroupJid      String
-  destinationGroupJid String
-  originalText        String?   @db.Text
-  rewrittenText       String    @db.Text
-  status              String
-  mode                String?
-  sentMessageType     String?
-  mediaForwarded      Boolean   @default(false)
+  id                    String    @id @default(cuid())
+  userId                String
+  sessionId             String
+  sourceMessageId       String
+  sourceGroupJid        String
+  destinationGroupJid   String
+  originalText          String?   @db.Text
+  rewrittenText         String    @db.Text
+  status                String
+  mode                  String?
+  sentMessageType       String?
+  mediaForwarded        Boolean   @default(false)
   sentProviderMessageId String?
   sentProviderRaw       Json?
-  error               String?   @db.Text
-  sentAt              DateTime?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  reason                String?
+  error                 String?   @db.Text
+  sentAt                DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@index([userId])
   @@index([sessionId])
   @@index([sourceMessageId])
   @@index([destinationGroupJid])
   @@index([status])
+  @@index([reason])
+  @@index([createdAt])
 }

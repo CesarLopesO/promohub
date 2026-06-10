@@ -10,14 +10,17 @@
   "scripts": {
     "dev": "concurrently -k -n infra,apps -c cyan,green \"docker compose up\" \"turbo dev\"",
     "dev:apps": "turbo dev",
+    "dev:worker": "npm run dev -w @promohub/worker",
     "dev:infra": "docker compose up -d postgres redis",
     "dev:infra:down": "docker compose down",
     "build": "turbo build",
+    "build:worker": "npm run build -w @promohub/worker",
     "lint": "turbo lint",
     "test": "npm test -w @promohub/api",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "turbo typecheck",
+    "typecheck:worker": "npm run typecheck -w @promohub/worker",
     "db:generate": "npm run prisma:generate -w @promohub/api",
     "db:migrate": "npm run prisma:migrate -w @promohub/api",
     "prepare": "husky"

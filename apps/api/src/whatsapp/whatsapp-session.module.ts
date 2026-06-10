@@ -4,6 +4,8 @@ import { AffiliateModule } from "../modules/affiliate/affiliate.module";
 import { AuthModule } from "../modules/auth/auth.module";
 import { PlansModule } from "../modules/plans/plans.module";
 import { MessageForwardingService } from "../modules/routes/message-forwarding.service";
+import { WorkerNodesModule } from "../modules/workers/worker-nodes.module";
+import { QueueModule } from "../queues/queue.module";
 import { PrismaService } from "../prisma.service";
 import { BaileysPrismaAuthStore } from "./auth/baileys-prisma-auth.store";
 import { WhatsAppGroupDiscoveryService } from "./groups/whatsapp-group-discovery.service";
@@ -18,7 +20,13 @@ import {
 } from "./whatsapp-session.controller";
 
 @Module({
-  imports: [AffiliateModule, AuthModule, PlansModule],
+  imports: [
+    AffiliateModule,
+    AuthModule,
+    PlansModule,
+    QueueModule,
+    WorkerNodesModule,
+  ],
   controllers: [
     WhatsAppSessionController,
     WhatsAppSessionsController,

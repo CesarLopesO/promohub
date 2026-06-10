@@ -12,6 +12,10 @@ import {
   detectMarketplace,
   Marketplace,
 } from "../../modules/affiliate/helpers/detect-marketplace";
+import {
+  ForwardSkipReason,
+  type ForwardSkipReason as ForwardSkipReasonValue,
+} from "../../modules/routes/forward-skip-reason";
 import { MessageForwardingService } from "../../modules/routes/message-forwarding.service";
 import type {
   WhatsAppMessageDto,
@@ -107,7 +111,12 @@ export class WhatsAppMessagesService {
     const skipReason = this.readSkipReason(message);
 
     if (skipReason) {
-      console.log(`[WA_MESSAGE] skipped reason=${skipReason}`);
+      this.logMessageSkip(
+        sessionId,
+        groupJid ?? undefined,
+        messageId ?? undefined,
+        skipReason,
+      );
       return;
     }
 
@@ -145,6 +154,13 @@ export class WhatsAppMessagesService {
           savedMessage.sessionId,
           savedMessage.groupJid,
         );
+      } else {
+        this.logMessageSkip(
+          savedMessage.sessionId,
+          savedMessage.groupJid,
+          messageId!,
+          ForwardSkipReason.NO_LINKS,
+        );
       }
     } catch (error) {
       if (this.isUniqueConstraintError(error)) {
@@ -168,31 +184,33 @@ export class WhatsAppMessagesService {
     }
   }
 
-  private readSkipReason(message: WAMessage): string | undefined {
+  private readSkipReason(
+    message: WAMessage,
+  ): ForwardSkipReasonValue | undefined {
     const groupJid = message.key.remoteJid;
 
     if (message.key.fromMe) {
-      return "FROM_ME";
+      return ForwardSkipReason.FROM_ME;
     }
 
     if (!groupJid) {
-      return "MISSING_REMOTE_JID";
+      return ForwardSkipReason.MISSING_REMOTE_JID;
     }
 
     if (!groupJid.endsWith("@g.us")) {
-      return "PRIVATE_CHAT";
+      return ForwardSkipReason.PRIVATE_CHAT;
     }
 
     if (!message.key.id) {
-      return "MISSING_MESSAGE_ID";
+      return ForwardSkipReason.MISSING_MESSAGE_ID;
     }
 
     if (isReactionMessage(message)) {
-      return "REACTION";
+      return ForwardSkipReason.REACTION;
     }
 
     if (isProtocolMessage(message)) {
-      return "PROTOCOL";
+      return ForwardSkipReason.PROTOCOL;
     }
 
     return undefined;
@@ -215,7 +233,9 @@ export class WhatsAppMessagesService {
       })
       .then((route) => {
         if (!route) {
-          console.log("[AUTO_FORWARD] skipped no active routes");
+          console.log(
+            `[AUTO_FORWARD] skipped sessionId=${sessionId} sourceGroupJid=${sourceGroupJid} messageId=${messageId} reason=${ForwardSkipReason.NO_ACTIVE_ROUTES}`,
+          );
           return undefined;
         }
 
@@ -223,11 +243,22 @@ export class WhatsAppMessagesService {
           .get(MessageForwardingService, { strict: false })
           .forwardMessageById(userId, messageId, { mode: "auto" });
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         console.log(
-          `[AUTO_FORWARD] failed ${this.readErrorMessage(error)}`,
+          `[AUTO_FORWARD] failed sessionId=${sessionId} sourceGroupJid=${sourceGroupJid} messageId=${messageId} reason=${ForwardSkipReason.SEND_FAILED}`,
         );
       });
+  }
+
+  private logMessageSkip(
+    sessionId: string,
+    sourceGroupJid: string | undefined,
+    messageId: string | undefined,
+    reason: ForwardSkipReasonValue,
+  ): void {
+    console.log(
+      `[WA_MESSAGE] skipped sessionId=${sessionId}${sourceGroupJid ? ` sourceGroupJid=${sourceGroupJid}` : ""}${messageId ? ` messageId=${messageId}` : ""} reason=${reason}`,
+    );
   }
 
   private async findSession(sessionRecordId: string) {
@@ -340,14 +371,6 @@ export class WhatsAppMessagesService {
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     );
-  }
-
-  private readErrorMessage(error: unknown): string {
-    if (error instanceof Error) {
-      return error.message;
-    }
-
-    return "Unknown error";
   }
 
   private parsePositiveInteger(

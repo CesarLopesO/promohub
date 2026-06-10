@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { SupportButton } from "@/src/components/support-button";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -30,7 +31,10 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        <SupportButton />
+      </body>
     </html>
   );
 }

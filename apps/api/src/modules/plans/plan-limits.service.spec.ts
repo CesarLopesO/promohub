@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { ForbiddenException } from "@nestjs/common";
 import { Plan } from "@prisma/client";
 
-import { PlanLimitsService } from "./plan-limits.service";
+import { PLAN_LIMIT_REACHED, PlanLimitsService } from "./plan-limits.service";
 
 type StoredUser = {
   id: string;
@@ -36,32 +36,54 @@ function makeService(options: {
         users.find((user) => user.id === where.id) ?? null,
     },
     whatsAppSession: {
-      count: async ({ where }: { where: { userId: string; deletedAt: null } }) =>
+      count: async ({
+        where,
+      }: {
+        where: { userId: string; deletedAt: null };
+      }) =>
         sessions.filter(
           (session) =>
-            session.userId === where.userId && session.deletedAt === where.deletedAt,
+            session.userId === where.userId &&
+            session.deletedAt === where.deletedAt,
         ).length,
     },
     messageRoute: {
-      count: async ({ where }: { where: { userId: string; isActive: boolean } }) =>
+      count: async ({
+        where,
+      }: {
+        where: { userId: string; isActive: boolean };
+      }) =>
         routes.filter(
-          (route) => route.userId === where.userId && route.isActive === where.isActive,
+          (route) =>
+            route.userId === where.userId && route.isActive === where.isActive,
         ).length,
       findMany: async ({
         where,
         distinct,
       }: {
-        where: { userId: string; isActive: boolean };
-        distinct: ["sourceGroupJid"] | ["destinationGroupJid"];
+        where: {
+          userId: string;
+          isActive: boolean;
+          NOT?: { id: string };
+        };
+        distinct?: ["sourceGroupJid"] | ["destinationGroupJid"];
       }) => {
+        const matchingRoutes = routes.filter(
+          (route) =>
+            route.userId === where.userId && route.isActive === where.isActive,
+        );
+
+        if (!distinct) {
+          return matchingRoutes.map((route) => ({
+            sourceGroupJid: route.sourceGroupJid,
+            destinationGroupJid: route.destinationGroupJid,
+          }));
+        }
+
         const key = distinct[0];
         const seen = new Set<string>();
 
-        return routes
-          .filter(
-            (route) =>
-              route.userId === where.userId && route.isActive === where.isActive,
-          )
+        return matchingRoutes
           .filter((route) => {
             const value = route[key];
 
@@ -107,12 +129,15 @@ function sessions(count: number): StoredSession[] {
 }
 
 function routes(sourceCount: number, destinationCount: number): StoredRoute[] {
-  return Array.from({ length: Math.max(sourceCount, destinationCount) }, (_, index) => ({
-    userId: "user-1",
-    sourceGroupJid: `source-${Math.min(index, sourceCount - 1)}@g.us`,
-    destinationGroupJid: `destination-${Math.min(index, destinationCount - 1)}@g.us`,
-    isActive: true,
-  }));
+  return Array.from(
+    { length: Math.max(sourceCount, destinationCount) },
+    (_, index) => ({
+      userId: "user-1",
+      sourceGroupJid: `source-${Math.min(index, sourceCount - 1)}@g.us`,
+      destinationGroupJid: `destination-${Math.min(index, destinationCount - 1)}@g.us`,
+      isActive: true,
+    }),
+  );
 }
 
 describe("PlanLimitsService", () => {
@@ -121,7 +146,15 @@ describe("PlanLimitsService", () => {
 
     await assert.rejects(
       () => service.assertCanCreateWhatsAppSession("user-1"),
-      ForbiddenException,
+      (error: unknown) => {
+        assert.ok(error instanceof ForbiddenException);
+        assert.deepEqual(error.getResponse(), {
+          code: PLAN_LIMIT_REACHED,
+          message:
+            "Seu plano FREE permite no máximo 1 sessão de WhatsApp cadastrada.",
+        });
+        return true;
+      },
     );
   });
 
@@ -140,11 +173,30 @@ describe("PlanLimitsService", () => {
     await service.assertCanCreateWhatsAppSession("user-1");
   });
 
+  it("deleted WhatsApp sessions do not count toward the limit", async () => {
+    const service = makeService({
+      plan: Plan.FREE,
+      sessions: [
+        {
+          userId: "user-1",
+          deletedAt: new Date("2026-06-10T12:00:00.000Z"),
+        },
+      ],
+    });
+
+    await service.assertCanCreateWhatsAppSession("user-1");
+  });
+
   it("FREE blocks a fourth source group", async () => {
     const service = makeService({ plan: Plan.FREE, routes: routes(3, 1) });
 
     await assert.rejects(
-      () => service.assertCanCreateRoute("user-1", "source-3@g.us", "destination-0@g.us"),
+      () =>
+        service.assertCanCreateRoute(
+          "user-1",
+          "source-3@g.us",
+          "destination-0@g.us",
+        ),
       ForbiddenException,
     );
   });
@@ -153,7 +205,12 @@ describe("PlanLimitsService", () => {
     const service = makeService({ plan: Plan.FREE, routes: routes(1, 1) });
 
     await assert.rejects(
-      () => service.assertCanCreateRoute("user-1", "source-0@g.us", "destination-1@g.us"),
+      () =>
+        service.assertCanCreateRoute(
+          "user-1",
+          "source-0@g.us",
+          "destination-1@g.us",
+        ),
       ForbiddenException,
     );
   });
@@ -162,7 +219,12 @@ describe("PlanLimitsService", () => {
     const service = makeService({ plan: Plan.BASIC, routes: routes(10, 1) });
 
     await assert.rejects(
-      () => service.assertCanCreateRoute("user-1", "source-10@g.us", "destination-0@g.us"),
+      () =>
+        service.assertCanCreateRoute(
+          "user-1",
+          "source-10@g.us",
+          "destination-0@g.us",
+        ),
       ForbiddenException,
     );
   });
@@ -171,7 +233,12 @@ describe("PlanLimitsService", () => {
     const service = makeService({ plan: Plan.BASIC, routes: routes(1, 5) });
 
     await assert.rejects(
-      () => service.assertCanCreateRoute("user-1", "source-0@g.us", "destination-5@g.us"),
+      () =>
+        service.assertCanCreateRoute(
+          "user-1",
+          "source-0@g.us",
+          "destination-5@g.us",
+        ),
       ForbiddenException,
     );
   });
@@ -179,7 +246,32 @@ describe("PlanLimitsService", () => {
   it("PRO does not block groups", async () => {
     const service = makeService({ plan: Plan.PRO, routes: routes(30, 20) });
 
-    await service.assertCanCreateRoute("user-1", "source-31@g.us", "destination-21@g.us");
+    await service.assertCanCreateRoute(
+      "user-1",
+      "source-31@g.us",
+      "destination-21@g.us",
+    );
+  });
+
+  it("inactive routes do not count toward group limits", async () => {
+    const service = makeService({
+      plan: Plan.FREE,
+      routes: [
+        ...routes(2, 1),
+        {
+          userId: "user-1",
+          sourceGroupJid: "inactive-source@g.us",
+          destinationGroupJid: "inactive-destination@g.us",
+          isActive: false,
+        },
+      ],
+    });
+
+    await service.assertCanCreateRoute(
+      "user-1",
+      "source-2@g.us",
+      "destination-0@g.us",
+    );
   });
 
   it("returns billing usage correctly", async () => {

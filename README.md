@@ -1,6 +1,6 @@
-# PROMOHUB
+# PeppaBot
 
-PROMOHUB é um SaaS de automação para afiliados com foco em grupos WhatsApp.
+Automação de grupos de ofertas e afiliados para WhatsApp.
 
 Este repositório usa Turborepo com apps Next.js e NestJS, pacotes compartilhados, PostgreSQL, Redis, Prisma, ESLint, Prettier, Husky e Commitlint.
 
