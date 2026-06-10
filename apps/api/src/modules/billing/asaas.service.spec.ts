@@ -102,7 +102,7 @@ describe("AsaasService", () => {
     assert.deepEqual(requests[2]?.data, {
       customer: "cus_1",
       billingType: "UNDEFINED",
-      value: 49.9,
+      value: 79.9,
       nextDueDate: new Date().toISOString().slice(0, 10),
       cycle: "MONTHLY",
       description: "Promohub BASIC",

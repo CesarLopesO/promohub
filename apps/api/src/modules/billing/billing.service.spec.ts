@@ -365,9 +365,14 @@ describe("BillingService", () => {
 
   it("derives displayed features from PlanLimitsService", () => {
     const { service } = makeService();
-    const free = service.plans().find((plan) => plan.id === Plan.FREE)!;
+    const plans = service.plans();
+    const free = plans.find((plan) => plan.id === Plan.FREE)!;
+    const basic = plans.find((plan) => plan.id === Plan.BASIC)!;
+    const pro = plans.find((plan) => plan.id === Plan.PRO)!;
 
     assert.equal(free.priceCents, 0);
+    assert.equal(basic.priceCents, 7990);
+    assert.equal(pro.priceCents, 9990);
     assert.ok(free.features.includes("propaganda Promohub"));
     assert.ok(free.features.includes("até 3 grupos origem"));
   });

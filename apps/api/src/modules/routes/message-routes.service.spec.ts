@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { BadRequestException, ConflictException } from "@nestjs/common";
-import type { MessageRoute } from "@prisma/client";
+import { Plan, type MessageRoute } from "@prisma/client";
 
 import { Marketplace } from "../affiliate/helpers/detect-marketplace";
 import { MessageForwardingService } from "./message-forwarding.service";
 import { MessageRoutesService } from "./message-routes.service";
+
+const FREE_PLAN_SIGNATURE =
+  "🤖 Automatizado por PeppaBot\n" +
+  "Automação de grupos de ofertas e afiliados\n" +
+  "peppabot.com";
 
 type StoredMessage = {
   id: string;
@@ -76,6 +81,7 @@ function makeService(options?: {
   sendMessageError?: Error;
   sendMessageResult?: unknown;
   generatedInviteUrls?: Record<string, string | null>;
+  userPlan?: Plan;
 }) {
   const routes = [...(options?.routes ?? [])];
   const messages = options?.messages ?? [];
@@ -85,6 +91,12 @@ function makeService(options?: {
     content: unknown;
   }> = [];
   const prisma = {
+    user: {
+      findUnique: async () => ({
+        id: "test-user",
+        plan: options?.userPlan ?? Plan.BASIC,
+      }),
+    },
     messageRoute: {
       create: async ({
         data,
@@ -673,6 +685,140 @@ describe("MessageRoutesService", () => {
         },
       },
     ]);
+  });
+
+  it("adds the promotional signature for FREE users", async () => {
+    const destinationInviteUrl = "https://chat.whatsapp.com/DESTINO";
+    const { forwardingService, sentMessages, forwarded } = makeService({
+      userPlan: Plan.FREE,
+      routes: [makeRoute({ destinationInviteUrl })],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://amzn.to/abc https://wa.me/559999",
+          links: ["https://amzn.to/abc", "https://wa.me/559999"],
+        },
+      ],
+      rewrittenText:
+        "Oferta https://amzn.to/abc?tag=meutag-20 https://wa.me/559999",
+    });
+
+    await forwardingService.forwardMessageById("test-user", "message-id");
+
+    const expected =
+      `Oferta https://amzn.to/abc?tag=meutag-20 ${destinationInviteUrl}` +
+      `\n\n${FREE_PLAN_SIGNATURE}`;
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      expected,
+    );
+    assert.equal(forwarded[0]?.rewrittenText, expected);
+  });
+
+  it("does not add the promotional signature for BASIC users", async () => {
+    const { forwardingService, sentMessages } = makeService({
+      userPlan: Plan.BASIC,
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://amzn.to/abc",
+          links: ["https://amzn.to/abc"],
+        },
+      ],
+      rewrittenText: "Oferta com link de afiliado",
+    });
+
+    await forwardingService.forwardMessageById("test-user", "message-id");
+
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      "Oferta com link de afiliado",
+    );
+  });
+
+  it("does not add the promotional signature for PRO users", async () => {
+    const { forwardingService, sentMessages } = makeService({
+      userPlan: Plan.PRO,
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://amzn.to/abc",
+          links: ["https://amzn.to/abc"],
+        },
+      ],
+      rewrittenText: "Oferta com link de afiliado",
+    });
+
+    await forwardingService.forwardMessageById("test-user", "message-id");
+
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      "Oferta com link de afiliado",
+    );
+  });
+
+  it("adds the promotional signature to image captions for FREE users", async () => {
+    const { forwardingService, sentMessages } = makeService({
+      userPlan: Plan.FREE,
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: "Oferta https://amzn.to/abc",
+          links: ["https://amzn.to/abc"],
+          messageType: "image",
+          hasMedia: true,
+          rawMessage: { message: { imageMessage: {} } },
+        },
+      ],
+      rewrittenText: "Oferta com imagem",
+    });
+    (
+      forwardingService as unknown as {
+        downloadImage: () => Promise<Buffer>;
+      }
+    ).downloadImage = async () => Buffer.from("image");
+
+    await forwardingService.forwardMessageById("test-user", "message-id");
+
+    assert.equal(
+      (sentMessages[0]?.content as { caption?: string }).caption,
+      `Oferta com imagem\n\n${FREE_PLAN_SIGNATURE}`,
+    );
+  });
+
+  it("does not duplicate an existing promotional signature", async () => {
+    const signedText = `Oferta existente\n\n${FREE_PLAN_SIGNATURE}`;
+    const { forwardingService, sentMessages } = makeService({
+      userPlan: Plan.FREE,
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: signedText,
+          links: ["https://amzn.to/abc"],
+        },
+      ],
+      rewrittenText: signedText,
+    });
+
+    await forwardingService.forwardMessageById("test-user", "message-id");
+
+    const sentText = (sentMessages[0]?.content as { text?: string }).text ?? "";
+    assert.equal(sentText, signedText);
+    assert.equal(sentText.split("🤖 Automatizado por PeppaBot").length - 1, 1);
   });
 
   it("does not forward without an active route", async () => {

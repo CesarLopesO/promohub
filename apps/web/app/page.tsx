@@ -46,7 +46,7 @@ const plans = [
   },
   {
     name: "BASIC",
-    price: "R$ 49,90",
+    price: "R$ 79,90",
     period: "/mês",
     badge: "Mais popular",
     features: [

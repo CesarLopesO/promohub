@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { Prisma } from "@prisma/client";
+import { Plan, Prisma } from "@prisma/client";
 
 import { AffiliateLinkRewriterService } from "../affiliate/affiliate-link-rewriter.service";
 import { Marketplace } from "../affiliate/helpers/detect-marketplace";
@@ -21,6 +21,11 @@ const FORWARDED_STATUS_SENT_TEXT_FALLBACK = "SENT_TEXT_FALLBACK";
 const FORWARDED_STATUS_FAILED = "FAILED";
 const FORWARDED_STATUS_SKIPPED = "SKIPPED";
 const FORWARDED_STATUS_SKIPPED_ALREADY_SENT = "SKIPPED_ALREADY_SENT";
+const FREE_PLAN_SIGNATURE = [
+  "🤖 Automatizado por PeppaBot",
+  "Automação de grupos de ofertas e afiliados",
+  "peppabot.com",
+].join("\n");
 
 type ForwardMode = "manual" | "auto";
 
@@ -72,6 +77,15 @@ export class MessageForwardingService {
 
     if (!message) {
       throw new NotFoundException("WhatsApp message not found.");
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: normalizedUserId },
+      select: { plan: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException("User not found.");
     }
 
     const links = this.readLinks(message.links);
@@ -218,7 +232,10 @@ export class MessageForwardingService {
         affiliateRewrittenText,
         destinationInviteUrl,
       );
-      const rewrittenText = whatsappRewrite.text;
+      const rewrittenText = this.appendFreePlanSignature(
+        whatsappRewrite.text,
+        user.plan,
+      );
       const warnings =
         whatsappLinks.length > 0 && !destinationInviteUrl
           ? ["WHATSAPP_INVITE_CODE_FAILED"]
@@ -395,6 +412,14 @@ export class MessageForwardingService {
     }
 
     return value.filter((link): link is string => typeof link === "string");
+  }
+
+  private appendFreePlanSignature(text: string, plan: Plan): string {
+    if (plan !== Plan.FREE || text.includes(FREE_PLAN_SIGNATURE)) {
+      return text;
+    }
+
+    return `${text}\n\n${FREE_PLAN_SIGNATURE}`;
   }
 
   private async sendForwardedMessage(

@@ -66,7 +66,7 @@ export type AsaasWebhook = {
 };
 
 const PLAN_VALUES: Record<PaidPlan, number> = {
-  BASIC: 49.9,
+  BASIC: 79.9,
   PRO: 99.9,
 };
 

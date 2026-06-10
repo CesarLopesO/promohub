@@ -72,7 +72,7 @@ type WebhookResult = {
 
 const PLAN_PRICES: Record<Plan, number> = {
   FREE: 0,
-  BASIC: 4990,
+  BASIC: 7990,
   PRO: 9990,
 };
 
