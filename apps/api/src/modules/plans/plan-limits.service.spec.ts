@@ -362,10 +362,11 @@ describe("PlanLimitsService", () => {
   });
 
   it("returns FREE daily limit and remaining usage", async () => {
+    const now = new Date();
     const forwards = Array.from({ length: 99 }, () => ({
       userId: "user-1",
       status: "SENT",
-      sentAt: new Date("2026-06-10T12:00:00.000Z"),
+      sentAt: now,
     }));
     const service = makeService({ plan: Plan.FREE, forwards });
     const usage = await service.getUsage("user-1");

@@ -4,6 +4,12 @@ import { FormEvent, useEffect, useState } from "react";
 import { Save } from "lucide-react";
 
 import { Button } from "@promohub/ui/button";
+import {
+  AdminPlanPricesForm,
+  buildPlanPricesPayload,
+  centsToReaisInput,
+  type PlanPrices,
+} from "@/src/components/admin-plan-prices";
 import { ErrorBox, LoadingBlock, PageHeader } from "@/src/components/ui-state";
 import type { SupportSettings } from "@/src/components/support-channels";
 import { apiFetch } from "@/src/lib/api";
@@ -15,9 +21,13 @@ export default function AdminSupportSettingsPage() {
   const [supportEmail, setSupportEmail] = useState("");
   const [supportWhatsappUrl, setSupportWhatsappUrl] = useState("");
   const [freePlanSignature, setFreePlanSignature] = useState("");
+  const [basicPrice, setBasicPrice] = useState("");
+  const [proPrice, setProPrice] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingPrices, setSavingPrices] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [pricesSaved, setPricesSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -25,14 +35,19 @@ export default function AdminSupportSettingsPage() {
 
     async function loadSettings() {
       try {
-        const result = await apiFetch<SupportSettings>("/admin/settings");
+        const [settings, planPrices] = await Promise.all([
+          apiFetch<SupportSettings>("/admin/settings"),
+          apiFetch<PlanPrices>("/admin/plan-prices"),
+        ]);
 
         if (!cancelled) {
-          setSupportEmail(result.supportEmail);
-          setSupportWhatsappUrl(result.supportWhatsappUrl);
+          setSupportEmail(settings.supportEmail);
+          setSupportWhatsappUrl(settings.supportWhatsappUrl);
           setFreePlanSignature(
-            result.freePlanSignature ?? DEFAULT_FREE_PLAN_SIGNATURE,
+            settings.freePlanSignature ?? DEFAULT_FREE_PLAN_SIGNATURE,
           );
+          setBasicPrice(centsToReaisInput(planPrices.BASIC));
+          setProPrice(centsToReaisInput(planPrices.PRO));
         }
       } catch (err) {
         if (!cancelled) {
@@ -87,6 +102,28 @@ export default function AdminSupportSettingsPage() {
     }
   }
 
+  async function savePlanPrices(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingPrices(true);
+    setPricesSaved(false);
+    setError(null);
+
+    try {
+      const result = await apiFetch<PlanPrices>("/admin/plan-prices", {
+        method: "PATCH",
+        body: JSON.stringify(buildPlanPricesPayload(basicPrice, proPrice)),
+      });
+
+      setBasicPrice(centsToReaisInput(result.BASIC));
+      setProPrice(centsToReaisInput(result.PRO));
+      setPricesSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao salvar preços.");
+    } finally {
+      setSavingPrices(false);
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -103,58 +140,70 @@ export default function AdminSupportSettingsPage() {
       {loading ? (
         <LoadingBlock message="Carregando configurações..." />
       ) : (
-        <form
-          className="rounded-lg border border-slate-200 bg-white p-5"
-          onSubmit={saveSettings}
-        >
-          <label className="block text-sm font-medium text-slate-700">
-            Email de contato
-            <input
-              className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
-              onChange={(event) => setSupportEmail(event.target.value)}
-              placeholder="suporte@peppabot.com"
-              type="email"
-              value={supportEmail}
-            />
-          </label>
+        <>
+          <form
+            className="rounded-lg border border-slate-200 bg-white p-5"
+            onSubmit={saveSettings}
+          >
+            <label className="block text-sm font-medium text-slate-700">
+              Email de contato
+              <input
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
+                onChange={(event) => setSupportEmail(event.target.value)}
+                placeholder="suporte@peppabot.com"
+                type="email"
+                value={supportEmail}
+              />
+            </label>
 
-          <label className="mt-4 block text-sm font-medium text-slate-700">
-            Link do WhatsApp
-            <input
-              className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
-              onChange={(event) => setSupportWhatsappUrl(event.target.value)}
-              placeholder="https://wa.me/5538999999999?text=Ol%C3%A1%2C%20preciso%20de%20suporte%20no%20PeppaBot."
-              type="url"
-              value={supportWhatsappUrl}
-            />
-          </label>
+            <label className="mt-4 block text-sm font-medium text-slate-700">
+              Link do WhatsApp
+              <input
+                className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
+                onChange={(event) => setSupportWhatsappUrl(event.target.value)}
+                placeholder="https://wa.me/5538999999999?text=Ol%C3%A1%2C%20preciso%20de%20suporte%20no%20PeppaBot."
+                type="url"
+                value={supportWhatsappUrl}
+              />
+            </label>
 
-          <label className="mt-4 block text-sm font-medium text-slate-700">
-            Mensagem do plano FREE
-            <textarea
-              className="mt-1 min-h-28 w-full resize-y rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-950"
-              maxLength={300}
-              onChange={(event) => setFreePlanSignature(event.target.value)}
-              placeholder={DEFAULT_FREE_PLAN_SIGNATURE}
-              value={freePlanSignature}
-            />
-            <span className="mt-1 block text-xs text-slate-500">
-              {freePlanSignature.length}/300 caracteres
-            </span>
-          </label>
-
-          <div className="mt-6 flex flex-wrap items-center gap-3">
-            <Button disabled={saving} type="submit">
-              <Save className="h-4 w-4" aria-hidden="true" />
-              {saving ? "Salvando..." : "Salvar configurações"}
-            </Button>
-            {saved ? (
-              <span className="text-sm font-medium text-emerald-700">
-                Configurações salvas.
+            <label className="mt-4 block text-sm font-medium text-slate-700">
+              Mensagem do plano FREE
+              <textarea
+                className="mt-1 min-h-28 w-full resize-y rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-950"
+                maxLength={300}
+                onChange={(event) => setFreePlanSignature(event.target.value)}
+                placeholder={DEFAULT_FREE_PLAN_SIGNATURE}
+                value={freePlanSignature}
+              />
+              <span className="mt-1 block text-xs text-slate-500">
+                {freePlanSignature.length}/300 caracteres
               </span>
-            ) : null}
-          </div>
-        </form>
+            </label>
+
+            <div className="mt-6 flex flex-wrap items-center gap-3">
+              <Button disabled={saving} type="submit">
+                <Save className="h-4 w-4" aria-hidden="true" />
+                {saving ? "Salvando..." : "Salvar configurações"}
+              </Button>
+              {saved ? (
+                <span className="text-sm font-medium text-emerald-700">
+                  Configurações salvas.
+                </span>
+              ) : null}
+            </div>
+          </form>
+
+          <AdminPlanPricesForm
+            basicPrice={basicPrice}
+            proPrice={proPrice}
+            saving={savingPrices}
+            saved={pricesSaved}
+            onBasicPriceChange={setBasicPrice}
+            onProPriceChange={setProPrice}
+            onSubmit={savePlanPrices}
+          />
+        </>
       )}
     </div>
   );

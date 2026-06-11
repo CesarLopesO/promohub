@@ -51,9 +51,15 @@ export class BillingController {
   })
   checkout(
     @Req() req: AuthenticatedRequest,
-    @Body() body: { plan?: unknown; cpfCnpj?: unknown },
+    @Body()
+    body: { plan?: unknown; cpfCnpj?: unknown; paymentMethod?: unknown },
   ) {
-    return this.billingService.checkout(req.user.id, body.plan, body.cpfCnpj);
+    return this.billingService.checkout(
+      req.user.id,
+      body.plan,
+      body.cpfCnpj,
+      body.paymentMethod,
+    );
   }
 
   @UseGuards(JwtAuthGuard)

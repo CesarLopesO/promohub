@@ -31,6 +31,10 @@ type AsaasSubscription = {
   status?: string;
 };
 
+type AsaasCheckout = {
+  id: string;
+};
+
 type AsaasPayment = {
   id: string;
   invoiceUrl?: string;
@@ -47,8 +51,8 @@ type PaidPlan = Extract<Plan, "BASIC" | "PRO">;
 
 export type AsaasCheckoutResult = {
   customerId: string;
-  subscriptionId: string;
-  paymentId: string;
+  subscriptionId?: string;
+  paymentId?: string;
   checkoutUrl: string;
   status: string;
 };
@@ -64,11 +68,6 @@ export type AsaasWebhook = {
     dueDate?: string;
   };
   payload: Record<string, unknown>;
-};
-
-const PLAN_VALUES: Record<PaidPlan, number> = {
-  BASIC: 79.9,
-  PRO: 99.9,
 };
 
 @Injectable()
@@ -157,6 +156,7 @@ export class AsaasService {
   async createSubscription(
     user: AsaasUser,
     plan: PaidPlan,
+    priceCents: number,
     localSubscriptionId: string,
     existingCustomerId?: string | null,
   ): Promise<AsaasCheckoutResult> {
@@ -164,7 +164,7 @@ export class AsaasService {
     const subscriptionPayload = {
       customer: customerId,
       billingType: "UNDEFINED",
-      value: PLAN_VALUES[plan],
+      value: priceCents / 100,
       nextDueDate: this.today(),
       cycle: "MONTHLY",
       description: `PeppaBot ${plan}`,
@@ -203,6 +203,68 @@ export class AsaasService {
       paymentId: payment.id,
       checkoutUrl: payment.invoiceUrl,
       status: payment.status ?? subscription.status ?? "PENDING",
+    };
+  }
+
+  async createRecurringCardCheckout(
+    user: AsaasUser,
+    plan: PaidPlan,
+    priceCents: number,
+    localSubscriptionId: string,
+    existingCustomerId?: string | null,
+  ): Promise<AsaasCheckoutResult> {
+    const customerId = await this.createOrGetCustomer(user, existingCustomerId);
+    const webUrl = this.config
+      .get<string>("WEB_URL", "http://localhost:3000")
+      .replace(/\/$/, "");
+    const returnUrl = `${webUrl}/dashboard/billing`;
+    const checkoutPayload = {
+      billingTypes: ["CREDIT_CARD"],
+      chargeTypes: ["RECURRENT"],
+      minutesToExpire: 100,
+      externalReference: localSubscriptionId,
+      callback: {
+        cancelUrl: returnUrl,
+        expiredUrl: returnUrl,
+        successUrl: returnUrl,
+      },
+      items: [
+        {
+          name: `PeppaBot ${plan}`,
+          description: `PeppaBot ${plan}`,
+          quantity: 1,
+          value: priceCents / 100,
+        },
+      ],
+      customer: customerId,
+      subscription: {
+        cycle: "MONTHLY",
+        nextDueDate: this.today(),
+      },
+    };
+
+    console.log("[ASAAS] creating recurring credit card checkout");
+    console.log(
+      `[ASAAS] checkout payload=${this.serializeForLog(checkoutPayload)}`,
+    );
+    const checkout = await this.request<AsaasCheckout>(
+      "post",
+      "/checkouts",
+      checkoutPayload,
+    );
+
+    if (!checkout.id) {
+      throw new BadGatewayException("Asaas did not return a checkout ID.");
+    }
+
+    const checkoutBaseUrl = this.config
+      .get<string>("ASAAS_CHECKOUT_BASE_URL", "https://asaas.com")
+      .replace(/\/$/, "");
+
+    return {
+      customerId,
+      checkoutUrl: `${checkoutBaseUrl}/checkoutSession/show?id=${encodeURIComponent(checkout.id)}`,
+      status: "PENDING",
     };
   }
 

@@ -1,14 +1,22 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { Plan, SubscriptionStatus } from "@prisma/client";
+import { BillingPaymentMethod, Plan, SubscriptionStatus } from "@prisma/client";
 
 import { BillingController } from "./billing.controller";
 
 function makeController() {
   const calls: Array<{ method: string; value: unknown }> = [];
   const billing = {
-    checkout: async (userId: string, plan: unknown, cpfCnpj: unknown) => {
-      calls.push({ method: "checkout", value: { userId, plan, cpfCnpj } });
+    checkout: async (
+      userId: string,
+      plan: unknown,
+      cpfCnpj: unknown,
+      paymentMethod: unknown,
+    ) => {
+      calls.push({
+        method: "checkout",
+        value: { userId, plan, cpfCnpj, paymentMethod },
+      });
       return {
         plan: Plan.BASIC,
         checkoutUrl: "https://sandbox.asaas.com/i/pay_1",
@@ -71,6 +79,7 @@ describe("BillingController", () => {
     const result = await controller.checkout(request, {
       plan: Plan.BASIC,
       cpfCnpj: "123.456.789-09",
+      paymentMethod: BillingPaymentMethod.CREDIT_CARD_RECURRING,
     });
 
     assert.equal(result.subscriptionId, "billing-1");
@@ -80,6 +89,7 @@ describe("BillingController", () => {
         userId: "user-1",
         plan: Plan.BASIC,
         cpfCnpj: "123.456.789-09",
+        paymentMethod: BillingPaymentMethod.CREDIT_CARD_RECURRING,
       },
     });
   });

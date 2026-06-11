@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { BadRequestException, UnauthorizedException } from "@nestjs/common";
-import { Plan, Prisma, SubscriptionStatus } from "@prisma/client";
+import {
+  BillingPaymentMethod,
+  Plan,
+  Prisma,
+  SubscriptionStatus,
+} from "@prisma/client";
 
-import { BillingService } from "./billing.service";
+import { BillingService, CPF_CNPJ_INVALID } from "./billing.service";
 
 type StoredBillingSubscription = {
   id: string;
   userId: string;
   plan: Plan;
+  paymentMethod: BillingPaymentMethod;
   provider: string;
   providerCustomerId: string | null;
   providerSubscriptionId: string | null;
@@ -34,6 +40,7 @@ function makeService(options?: {
   duplicateEvent?: boolean;
   duplicateProcessed?: boolean;
   cpfCnpj?: string | null;
+  prices?: Partial<Record<Plan, number>>;
 }) {
   const user: {
     id: string;
@@ -56,8 +63,10 @@ function makeService(options?: {
   const subscriptions: StoredBillingSubscription[] = [];
   const events: StoredWebhookEvent[] = [];
   const asaasCalls: Array<{
+    method: BillingPaymentMethod;
     user: typeof user;
     plan: Plan;
+    priceCents: number;
     localSubscriptionId: string;
     existingCustomerId?: string | null;
   }> = [];
@@ -78,10 +87,12 @@ function makeService(options?: {
       }: {
         where: {
           userId?: string;
+          id?: string;
           provider?: string;
           createdAt?: { gt: Date };
           providerCustomerId?: { not: null };
-          providerSubscriptionId?: { not: null };
+          providerSubscriptionId?: string | { not: null | string };
+          providerPaymentId?: string;
           status?: SubscriptionStatus | { in: SubscriptionStatus[] };
           OR?: Array<Record<string, string>>;
         };
@@ -89,6 +100,10 @@ function makeService(options?: {
       }) => {
         const matching = subscriptions.filter((subscription) => {
           if (where.userId && subscription.userId !== where.userId) {
+            return false;
+          }
+
+          if (where.id && subscription.id !== where.id) {
             return false;
           }
 
@@ -121,9 +136,31 @@ function makeService(options?: {
             return false;
           }
 
+          if (where.providerSubscriptionId) {
+            if (typeof where.providerSubscriptionId === "string") {
+              return (
+                subscription.providerSubscriptionId ===
+                where.providerSubscriptionId
+              );
+            }
+
+            const excluded = where.providerSubscriptionId.not;
+
+            if (excluded === null && !subscription.providerSubscriptionId) {
+              return false;
+            }
+
+            if (
+              typeof excluded === "string" &&
+              subscription.providerSubscriptionId === excluded
+            ) {
+              return false;
+            }
+          }
+
           if (
-            where.providerSubscriptionId &&
-            !subscription.providerSubscriptionId
+            where.providerPaymentId &&
+            subscription.providerPaymentId !== where.providerPaymentId
           ) {
             return false;
           }
@@ -146,7 +183,7 @@ function makeService(options?: {
       }: {
         data: Pick<
           StoredBillingSubscription,
-          "userId" | "plan" | "provider" | "status"
+          "userId" | "plan" | "paymentMethod" | "provider" | "status"
         >;
       }) => {
         const subscription: StoredBillingSubscription = {
@@ -234,12 +271,15 @@ function makeService(options?: {
     createSubscription: async (
       asaasUser: typeof user,
       plan: Plan,
+      priceCents: number,
       localSubscriptionId: string,
       existingCustomerId?: string | null,
     ) => {
       asaasCalls.push({
+        method: BillingPaymentMethod.FLEXIBLE,
         user: { ...asaasUser },
         plan,
+        priceCents,
         localSubscriptionId,
         existingCustomerId,
       });
@@ -248,6 +288,28 @@ function makeService(options?: {
         subscriptionId: "sub_1",
         paymentId: "pay_1",
         checkoutUrl: "https://sandbox.asaas.com/i/pay_1",
+        status: "PENDING",
+      };
+    },
+    createRecurringCardCheckout: async (
+      asaasUser: typeof user,
+      plan: Plan,
+      priceCents: number,
+      localSubscriptionId: string,
+      existingCustomerId?: string | null,
+    ) => {
+      asaasCalls.push({
+        method: BillingPaymentMethod.CREDIT_CARD_RECURRING,
+        user: { ...asaasUser },
+        plan,
+        priceCents,
+        localSubscriptionId,
+        existingCustomerId,
+      });
+      return {
+        customerId: "cus_1",
+        checkoutUrl:
+          "https://asaas.com/checkoutSession/show?id=checkout-recurring-1",
         status: "PENDING",
       };
     },
@@ -304,6 +366,21 @@ function makeService(options?: {
         referralResets.push(userId);
       },
     } as never,
+    {
+      getPrices: async () => ({
+        FREE: 0,
+        BASIC: 7_990,
+        PRO: 9_990,
+        ...options?.prices,
+      }),
+      getPaidPlanPrice: async (plan: Plan) =>
+        ({
+          FREE: 0,
+          BASIC: 7_990,
+          PRO: 9_990,
+          ...options?.prices,
+        })[plan],
+    } as never,
   );
 
   return {
@@ -319,8 +396,9 @@ function makeService(options?: {
 function createCheckout(
   service: BillingService,
   plan: Extract<Plan, "BASIC" | "PRO">,
+  paymentMethod: BillingPaymentMethod = BillingPaymentMethod.FLEXIBLE,
 ) {
-  return service.checkout("user-1", plan, "123.456.789-09");
+  return service.checkout("user-1", plan, "123.456.789-09", paymentMethod);
 }
 
 function webhook(event: string, cpfCnpj?: string) {
@@ -342,14 +420,19 @@ describe("BillingService", () => {
 
     await assert.rejects(
       service.checkout("user-1", Plan.PRO, undefined),
-      (error) =>
-        error instanceof BadRequestException &&
-        error.message === "CPF/CNPJ is required for checkout.",
+      (error) => {
+        assert.ok(error instanceof BadRequestException);
+        assert.deepEqual(error.getResponse(), {
+          code: CPF_CNPJ_INVALID,
+          message: "Informe um CPF ou CNPJ válido para gerar a cobrança.",
+        });
+        return true;
+      },
     );
     assert.equal(subscriptions.length, 0);
   });
 
-  it("stores only masked and peppered CPF/CNPJ data", async () => {
+  it("accepts formatted CPF and stores only masked and peppered data", async () => {
     const { service, user, asaasCalls } = makeService({ cpfCnpj: null });
 
     await service.checkout("user-1", Plan.PRO, "123.456.789-09");
@@ -360,13 +443,39 @@ describe("BillingService", () => {
     assert.equal(asaasCalls[0]?.user.cpfCnpj, "12345678909");
   });
 
-  it("accepts and normalizes a valid CNPJ", async () => {
-    const { service, user } = makeService({ cpfCnpj: null });
+  it("accepts CPF with digits only", async () => {
+    const { service, user, asaasCalls } = makeService({ cpfCnpj: null });
+
+    await service.checkout("user-1", Plan.BASIC, "12345678909");
+
+    assert.equal(user.cpfCnpj, "***.***.***-09");
+    assert.equal(asaasCalls[0]?.user.cpfCnpj, "12345678909");
+  });
+
+  it("accepts and normalizes a valid formatted CNPJ", async () => {
+    const { service, user, asaasCalls } = makeService({ cpfCnpj: null });
 
     await service.checkout("user-1", Plan.BASIC, "11.222.333/0001-81");
 
     assert.equal(user.cpfCnpj, "**.***.***/****-81");
     assert.match(user.cpfCnpjHash ?? "", /^[a-f0-9]{64}$/);
+    assert.equal(asaasCalls[0]?.user.cpfCnpj, "11222333000181");
+  });
+
+  it("returns CPF_CNPJ_INVALID for invalid CPF/CNPJ", async () => {
+    const { service } = makeService({ cpfCnpj: null });
+
+    await assert.rejects(
+      service.checkout("user-1", Plan.BASIC, "123.456.789-00"),
+      (error) => {
+        assert.ok(error instanceof BadRequestException);
+        assert.deepEqual(error.getResponse(), {
+          code: CPF_CNPJ_INVALID,
+          message: "Informe um CPF ou CNPJ válido para gerar a cobrança.",
+        });
+        return true;
+      },
+    );
   });
 
   it("returns only the masked CPF/CNPJ in subscription", async () => {
@@ -385,17 +494,88 @@ describe("BillingService", () => {
 
     assert.deepEqual(result, {
       plan: Plan.BASIC,
+      paymentMethod: BillingPaymentMethod.FLEXIBLE,
       checkoutUrl: "https://sandbox.asaas.com/i/pay_1",
       subscriptionId: "billing-1",
       status: SubscriptionStatus.PENDING,
     });
     assert.equal(subscriptions[0]?.providerSubscriptionId, "sub_1");
+    assert.equal(
+      subscriptions[0]?.paymentMethod,
+      BillingPaymentMethod.FLEXIBLE,
+    );
     assert.equal(user.subscriptionStatus, SubscriptionStatus.PENDING);
   });
 
-  it("derives displayed features from PlanLimitsService", () => {
+  it("creates and stores a recurring credit card checkout", async () => {
+    const { service, subscriptions, asaasCalls } = makeService();
+
+    const result = await createCheckout(
+      service,
+      Plan.PRO,
+      BillingPaymentMethod.CREDIT_CARD_RECURRING,
+    );
+
+    assert.deepEqual(result, {
+      plan: Plan.PRO,
+      paymentMethod: BillingPaymentMethod.CREDIT_CARD_RECURRING,
+      checkoutUrl:
+        "https://asaas.com/checkoutSession/show?id=checkout-recurring-1",
+      subscriptionId: "billing-1",
+      status: SubscriptionStatus.PENDING,
+    });
+    assert.equal(
+      subscriptions[0]?.paymentMethod,
+      BillingPaymentMethod.CREDIT_CARD_RECURRING,
+    );
+    assert.equal(subscriptions[0]?.providerSubscriptionId, null);
+    assert.equal(
+      asaasCalls[0]?.method,
+      BillingPaymentMethod.CREDIT_CARD_RECURRING,
+    );
+    assert.doesNotMatch(
+      JSON.stringify({ subscription: subscriptions[0], call: asaasCalls[0] }),
+      /creditCard|cardNumber|ccv|expiry/i,
+    );
+  });
+
+  it("rejects an invalid payment method", async () => {
+    const { service, subscriptions } = makeService();
+
+    await assert.rejects(
+      () => service.checkout("user-1", Plan.BASIC, "123.456.789-09", "PIX"),
+      BadRequestException,
+    );
+    assert.equal(subscriptions.length, 0);
+  });
+
+  it("does not expose full CPF/CNPJ in checkout logs or public response", async () => {
+    const { service } = makeService({ cpfCnpj: null });
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...values: unknown[]) => {
+      logs.push(values.map(String).join(" "));
+    };
+
+    try {
+      const result = await service.checkout(
+        "user-1",
+        Plan.BASIC,
+        "123.456.789-09",
+      );
+
+      assert.doesNotMatch(JSON.stringify(result), /12345678909/);
+      assert.doesNotMatch(JSON.stringify(result), /123\.456\.789-09/);
+      assert.doesNotMatch(logs.join("\n"), /12345678909/);
+      assert.doesNotMatch(logs.join("\n"), /123\.456\.789-09/);
+    } finally {
+      console.log = originalLog;
+    }
+  });
+
+  it("derives displayed features from PlanLimitsService", async () => {
     const { service } = makeService();
-    const plans = service.plans();
+    const plans = await service.plans();
     const free = plans.find((plan) => plan.id === Plan.FREE)!;
     const basic = plans.find((plan) => plan.id === Plan.BASIC)!;
     const pro = plans.find((plan) => plan.id === Plan.PRO)!;
@@ -414,6 +594,31 @@ describe("BillingService", () => {
     );
     assert.ok(free.features.includes("propaganda PeppaBot"));
     assert.ok(free.features.includes("até 3 grupos origem"));
+  });
+
+  it("returns plan price overrides from /billing/plans", async () => {
+    const { service } = makeService({
+      prices: { BASIC: 8_490, PRO: 12_990 },
+    });
+
+    const plans = await service.plans();
+
+    assert.equal(plans.find((plan) => plan.id === Plan.FREE)?.priceCents, 0);
+    assert.equal(
+      plans.find((plan) => plan.id === Plan.BASIC)?.priceCents,
+      8490,
+    );
+    assert.equal(plans.find((plan) => plan.id === Plan.PRO)?.priceCents, 12990);
+  });
+
+  it("uses the overridden price when creating checkout", async () => {
+    const { service, asaasCalls } = makeService({
+      prices: { BASIC: 8_490 },
+    });
+
+    await createCheckout(service, Plan.BASIC);
+
+    assert.equal(asaasCalls[0]?.priceCents, 8_490);
   });
 
   it("activates the contracted plan for 30 days", async () => {
@@ -437,6 +642,44 @@ describe("BillingService", () => {
       30 * 24 * 60 * 60 * 1000,
     );
     assert.deepEqual(referralConfirmations, ["user-1"]);
+  });
+
+  it("PAYMENT_CONFIRMED renews the current period from the active end date", async () => {
+    const { service, subscriptions } = makeService();
+    await createCheckout(service, Plan.PRO);
+    await service.handleAsaasWebhook("secret", webhook("PAYMENT_CONFIRMED"));
+    const firstEnd = subscriptions[0]!.currentPeriodEnd!;
+    subscriptions[0]!.providerPaymentId = "pay_previous";
+
+    await service.handleAsaasWebhook("secret", {
+      id: "evt_PAYMENT_CONFIRMED_RENEWAL",
+      event: "PAYMENT_CONFIRMED",
+      payment: {
+        id: "pay_2",
+        subscription: "sub_1",
+        externalReference: "billing-1",
+      },
+    });
+
+    assert.deepEqual(subscriptions[0]?.currentPeriodStart, firstEnd);
+    assert.equal(
+      subscriptions[0]!.currentPeriodEnd!.getTime() - firstEnd.getTime(),
+      30 * 24 * 60 * 60 * 1000,
+    );
+  });
+
+  it("PAYMENT_CONFIRMED associates the Asaas subscription created by recurring checkout", async () => {
+    const { service, subscriptions } = makeService();
+    await createCheckout(
+      service,
+      Plan.PRO,
+      BillingPaymentMethod.CREDIT_CARD_RECURRING,
+    );
+
+    await service.handleAsaasWebhook("secret", webhook("PAYMENT_CONFIRMED"));
+
+    assert.equal(subscriptions[0]?.providerSubscriptionId, "sub_1");
+    assert.equal(subscriptions[0]?.status, SubscriptionStatus.ACTIVE);
   });
 
   it("does not confirm referrals for non-confirmed payment events", async () => {
@@ -475,6 +718,70 @@ describe("BillingService", () => {
     assert.equal(user.subscriptionStatus, SubscriptionStatus.PAST_DUE);
     assert.equal(subscriptions[0]?.status, SubscriptionStatus.PAST_DUE);
     assert.deepEqual(referralResets, ["user-1"]);
+  });
+
+  it("downgrades when a newer ACTIVE row represents the same Asaas subscription", async () => {
+    const { service, user, subscriptions } = makeService();
+    await createCheckout(service, Plan.BASIC);
+    await service.handleAsaasWebhook("secret", webhook("PAYMENT_CONFIRMED"));
+    const matchedSubscription = subscriptions[0]!;
+    matchedSubscription.providerPaymentId = "pay_overdue";
+    const newerDuplicate: StoredBillingSubscription = {
+      ...matchedSubscription,
+      id: "billing-2",
+      providerPaymentId: "pay_renewal",
+      status: SubscriptionStatus.ACTIVE,
+      createdAt: new Date(matchedSubscription.createdAt.getTime() + 1_000),
+      updatedAt: new Date(matchedSubscription.updatedAt.getTime() + 1_000),
+    };
+    subscriptions.push(newerDuplicate);
+
+    const result = await service.handleAsaasWebhook("secret", {
+      id: "evt_PAYMENT_OVERDUE_DUPLICATE",
+      event: "PAYMENT_OVERDUE",
+      payment: {
+        id: "pay_overdue",
+        subscription: "sub_1",
+        externalReference: "billing-1",
+      },
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(newerDuplicate.status, SubscriptionStatus.PAST_DUE);
+    assert.equal(newerDuplicate.providerSubscriptionId, "sub_1");
+    assert.equal(user.plan, Plan.FREE);
+    assert.equal(user.subscriptionStatus, SubscriptionStatus.PAST_DUE);
+  });
+
+  it("does not downgrade for an overdue event from a different older subscription", async () => {
+    const { service, user, subscriptions } = makeService();
+    await createCheckout(service, Plan.BASIC);
+    await service.handleAsaasWebhook("secret", webhook("PAYMENT_CONFIRMED"));
+    const olderSubscription = subscriptions[0]!;
+    olderSubscription.providerPaymentId = "pay_old_overdue";
+    subscriptions.push({
+      ...olderSubscription,
+      id: "billing-2",
+      providerSubscriptionId: "sub_new",
+      providerPaymentId: "pay_new",
+      status: SubscriptionStatus.ACTIVE,
+      createdAt: new Date(olderSubscription.createdAt.getTime() + 1_000),
+      updatedAt: new Date(olderSubscription.updatedAt.getTime() + 1_000),
+    });
+
+    await service.handleAsaasWebhook("secret", {
+      id: "evt_PAYMENT_OVERDUE_OLD_SUBSCRIPTION",
+      event: "PAYMENT_OVERDUE",
+      payment: {
+        id: "pay_old_overdue",
+        subscription: "sub_1",
+        externalReference: "billing-1",
+      },
+    });
+
+    assert.equal(olderSubscription.status, SubscriptionStatus.PAST_DUE);
+    assert.equal(user.plan, Plan.BASIC);
+    assert.equal(user.subscriptionStatus, SubscriptionStatus.ACTIVE);
   });
 
   it("returns to FREE immediately after a refund", async () => {

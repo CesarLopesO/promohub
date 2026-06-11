@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import {
+  BillingPaymentMethod,
   Plan,
   Prisma,
   SubscriptionStatus,
@@ -16,6 +17,7 @@ import { PlanLimitsService } from "../plans/plan-limits.service";
 import { ReferralsService } from "../referrals/referrals.service";
 import { hashReferralCpfCnpj, maskCpfCnpj } from "../referrals/referral-cpf";
 import { AsaasService, type AsaasWebhook } from "./asaas.service";
+import { PlanPricesService } from "./plan-prices.service";
 
 type BillingPlanDto = {
   id: Plan;
@@ -30,6 +32,7 @@ type BillingPlanDto = {
 type BillingSubscriptionDto = {
   id: string;
   plan: Plan;
+  paymentMethod: BillingPaymentMethod;
   provider: string;
   status: SubscriptionStatus;
   checkoutUrl?: string;
@@ -50,6 +53,7 @@ type BillingMeDto = {
 
 type CurrentSubscriptionDto = {
   plan: Plan;
+  paymentMethod?: BillingPaymentMethod;
   status: SubscriptionStatus;
   cpfCnpjMasked?: string;
   currentPeriodStart?: Date;
@@ -61,6 +65,7 @@ type PaidPlan = Extract<Plan, "BASIC" | "PRO">;
 
 type CheckoutDto = {
   plan: PaidPlan;
+  paymentMethod: BillingPaymentMethod;
   checkoutUrl: string;
   subscriptionId: string;
   status: SubscriptionStatus;
@@ -70,12 +75,6 @@ type WebhookResult = {
   received: true;
   duplicate: boolean;
   processed: boolean;
-};
-
-const PLAN_PRICES: Record<Plan, number> = {
-  FREE: 0,
-  BASIC: 7990,
-  PRO: 9990,
 };
 
 const PLAN_DESCRIPTIONS: Record<Plan, string> = {
@@ -96,6 +95,8 @@ const CANCELED_EVENTS = new Set([
   "PAYMENT_CREDIT_CARD_CAPTURE_REFUSED",
 ]);
 
+export const CPF_CNPJ_INVALID = "CPF_CNPJ_INVALID";
+
 @Injectable()
 export class BillingService {
   constructor(
@@ -104,13 +105,16 @@ export class BillingService {
     private readonly config: ConfigService,
     private readonly planLimits: PlanLimitsService,
     private readonly referrals: ReferralsService,
+    private readonly planPrices: PlanPricesService,
   ) {}
 
-  plans(): BillingPlanDto[] {
+  async plans(): Promise<BillingPlanDto[]> {
+    const prices = await this.planPrices.getPrices();
+
     return Object.values(Plan).map((plan) => ({
       id: plan,
       name: plan,
-      priceCents: PLAN_PRICES[plan],
+      priceCents: prices[plan],
       currency: "BRL",
       interval: "month",
       description: PLAN_DESCRIPTIONS[plan],
@@ -152,6 +156,7 @@ export class BillingService {
 
     return {
       plan: billing.plan,
+      paymentMethod: billing.subscription?.paymentMethod,
       status: billing.subscriptionStatus,
       cpfCnpjMasked: billing.cpfCnpjMasked,
       currentPeriodStart: billing.subscription?.currentPeriodStart,
@@ -164,8 +169,10 @@ export class BillingService {
     userId: string,
     requestedPlan: unknown,
     requestedCpfCnpj?: unknown,
+    requestedPaymentMethod?: unknown,
   ): Promise<CheckoutDto> {
     const plan = this.normalizePaidPlan(requestedPlan);
+    const paymentMethod = this.normalizePaymentMethod(requestedPaymentMethod);
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -207,24 +214,40 @@ export class BillingService {
       data: {
         userId,
         plan,
+        paymentMethod,
         provider: "asaas",
         status: SubscriptionStatus.PENDING,
       },
     });
+    const priceCents = await this.planPrices.getPaidPlanPrice(plan);
 
     try {
-      const checkout = await this.asaas.createSubscription(
-        { ...user, cpfCnpj },
-        plan,
-        pending.id,
-        previous?.providerCustomerId,
-      );
+      const checkout =
+        paymentMethod === BillingPaymentMethod.CREDIT_CARD_RECURRING
+          ? await this.asaas.createRecurringCardCheckout(
+              { ...user, cpfCnpj },
+              plan,
+              priceCents,
+              pending.id,
+              previous?.providerCustomerId,
+            )
+          : await this.asaas.createSubscription(
+              { ...user, cpfCnpj },
+              plan,
+              priceCents,
+              pending.id,
+              previous?.providerCustomerId,
+            );
       const subscription = await this.prisma.billingSubscription.update({
         where: { id: pending.id },
         data: {
           providerCustomerId: checkout.customerId,
-          providerSubscriptionId: checkout.subscriptionId,
-          providerPaymentId: checkout.paymentId,
+          ...(checkout.subscriptionId
+            ? { providerSubscriptionId: checkout.subscriptionId }
+            : {}),
+          ...(checkout.paymentId
+            ? { providerPaymentId: checkout.paymentId }
+            : {}),
           status: SubscriptionStatus.PENDING,
           checkoutUrl: checkout.checkoutUrl,
         },
@@ -243,6 +266,7 @@ export class BillingService {
 
       return {
         plan,
+        paymentMethod,
         checkoutUrl: subscription.checkoutUrl!,
         subscriptionId: subscription.id,
         status: subscription.status,
@@ -318,7 +342,13 @@ export class BillingService {
     const sameActivePayment =
       subscription.status === SubscriptionStatus.ACTIVE &&
       subscription.providerPaymentId === webhook.payment.id;
-    const period = this.readActivePeriod(sameActivePayment);
+    const period = transition.activatePlan
+      ? this.readActivePeriod(
+          subscription,
+          webhook.eventType,
+          sameActivePayment,
+        )
+      : null;
     const shouldUpdateUser = canUpdateUser;
 
     await this.prisma.$transaction([
@@ -328,6 +358,9 @@ export class BillingService {
           status: transition.billingStatus,
           ...(webhook.payment.id
             ? { providerPaymentId: webhook.payment.id }
+            : {}),
+          ...(webhook.payment.subscriptionId
+            ? { providerSubscriptionId: webhook.payment.subscriptionId }
             : {}),
           ...(transition.activatePlan && period
             ? {
@@ -432,30 +465,43 @@ export class BillingService {
   }
 
   private async findWebhookSubscription(webhook: AsaasWebhook) {
-    const filters: Prisma.BillingSubscriptionWhereInput[] = [];
-
     if (webhook.payment.subscriptionId) {
-      filters.push({
-        providerSubscriptionId: webhook.payment.subscriptionId,
-      });
+      const byProviderSubscription =
+        await this.prisma.billingSubscription.findFirst({
+          where: {
+            provider: "asaas",
+            providerSubscriptionId: webhook.payment.subscriptionId,
+          },
+          orderBy: { createdAt: "desc" },
+        });
+
+      if (byProviderSubscription) {
+        return byProviderSubscription;
+      }
     }
 
     if (webhook.payment.id) {
-      filters.push({ providerPaymentId: webhook.payment.id });
+      const byPayment = await this.prisma.billingSubscription.findFirst({
+        where: {
+          provider: "asaas",
+          providerPaymentId: webhook.payment.id,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (byPayment) {
+        return byPayment;
+      }
     }
 
-    if (webhook.payment.externalReference) {
-      filters.push({ id: webhook.payment.externalReference });
-    }
-
-    if (filters.length === 0) {
+    if (!webhook.payment.externalReference) {
       return null;
     }
 
     return this.prisma.billingSubscription.findFirst({
       where: {
         provider: "asaas",
-        OR: filters,
+        id: webhook.payment.externalReference,
       },
     });
   }
@@ -518,9 +564,23 @@ export class BillingService {
     throw new BadRequestException("Choose BASIC or PRO to start checkout.");
   }
 
+  private normalizePaymentMethod(value: unknown): BillingPaymentMethod {
+    if (value === undefined || value === BillingPaymentMethod.FLEXIBLE) {
+      return BillingPaymentMethod.FLEXIBLE;
+    }
+
+    if (value === BillingPaymentMethod.CREDIT_CARD_RECURRING) {
+      return BillingPaymentMethod.CREDIT_CARD_RECURRING;
+    }
+
+    throw new BadRequestException(
+      "Choose FLEXIBLE or CREDIT_CARD_RECURRING as paymentMethod.",
+    );
+  }
+
   private normalizeCpfCnpj(value: unknown): string {
     if (value !== undefined && typeof value !== "string") {
-      throw new BadRequestException("CPF/CNPJ must be a string.");
+      this.throwInvalidCpfCnpj();
     }
 
     const normalized =
@@ -529,11 +589,11 @@ export class BillingService {
         : undefined;
 
     if (!normalized) {
-      throw new BadRequestException("CPF/CNPJ is required for checkout.");
+      this.throwInvalidCpfCnpj();
     }
 
     if (!this.isValidCpfCnpj(normalized)) {
-      throw new BadRequestException("Enter a valid CPF or CNPJ.");
+      this.throwInvalidCpfCnpj();
     }
 
     return normalized;
@@ -547,6 +607,13 @@ export class BillingService {
     return value.length === 11
       ? this.hasValidCpfDigits(value)
       : this.hasValidCnpjDigits(value);
+  }
+
+  private throwInvalidCpfCnpj(): never {
+    throw new BadRequestException({
+      code: CPF_CNPJ_INVALID,
+      message: "Informe um CPF ou CNPJ válido para gerar a cobrança.",
+    });
   }
 
   private hasValidCpfDigits(value: string): boolean {
@@ -597,6 +664,7 @@ export class BillingService {
     return {
       id: subscription.id,
       plan: subscription.plan,
+      paymentMethod: subscription.paymentMethod,
       provider: subscription.provider,
       status: subscription.status,
       checkoutUrl: subscription.checkoutUrl ?? undefined,
@@ -644,12 +712,20 @@ export class BillingService {
   private async canUpdateUser(
     subscription: BillingSubscription,
   ): Promise<boolean> {
+    const differentProviderSubscription = subscription.providerSubscriptionId
+      ? {
+          providerSubscriptionId: {
+            not: subscription.providerSubscriptionId,
+          },
+        }
+      : {};
     const newerActive = await this.prisma.billingSubscription.findFirst({
       where: {
         userId: subscription.userId,
         provider: subscription.provider,
         status: SubscriptionStatus.ACTIVE,
         createdAt: { gt: subscription.createdAt },
+        ...differentProviderSubscription,
       },
       select: { id: true },
     });
@@ -658,13 +734,21 @@ export class BillingService {
   }
 
   private readActivePeriod(
+    subscription: BillingSubscription,
+    eventType: string,
     preserveCurrentPeriod: boolean,
   ): { start: Date; end: Date } | null {
     if (preserveCurrentPeriod) {
       return null;
     }
 
-    const start = new Date();
+    const now = new Date();
+    const currentPeriodEnd = subscription.currentPeriodEnd;
+    const shouldRenewFromCurrentEnd =
+      eventType === "PAYMENT_CONFIRMED" &&
+      currentPeriodEnd !== null &&
+      currentPeriodEnd > now;
+    const start = shouldRenewFromCurrentEnd ? new Date(currentPeriodEnd) : now;
     const end = new Date(start);
     end.setUTCDate(end.getUTCDate() + 30);
 

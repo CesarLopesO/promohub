@@ -29,6 +29,11 @@ enum SubscriptionStatus {
   CANCELED
 }
 
+enum BillingPaymentMethod {
+  FLEXIBLE
+  CREDIT_CARD_RECURRING
+}
+
 enum WorkerNodeStatus {
   STARTING
   ACTIVE
@@ -128,21 +133,22 @@ model Subscription {
 }
 
 model BillingSubscription {
-  id                     String             @id @default(cuid())
+  id                     String               @id @default(cuid())
   userId                 String
   plan                   Plan
-  provider               String             @default("asaas")
+  paymentMethod          BillingPaymentMethod @default(FLEXIBLE)
+  provider               String               @default("asaas")
   providerCustomerId     String?
   providerSubscriptionId String?
   providerPaymentId      String?
-  status                 SubscriptionStatus @default(PENDING)
+  status                 SubscriptionStatus   @default(PENDING)
   checkoutUrl            String?
   currentPeriodStart     DateTime?
   currentPeriodEnd       DateTime?
   canceledAt             DateTime?
-  createdAt              DateTime           @default(now())
-  updatedAt              DateTime           @updatedAt
-  user                   User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+  user                   User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([provider])
@@ -306,6 +312,14 @@ model AppSetting {
   value     String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model PlanPriceOverride {
+  plan            String   @id
+  priceCents      Int
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 model ReferralCode {

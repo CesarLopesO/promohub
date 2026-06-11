@@ -77,6 +77,7 @@ describe("AsaasService", () => {
         cpfCnpj: "12345678909",
       },
       Plan.BASIC,
+      7_990,
       "billing-1",
     );
 
@@ -142,6 +143,7 @@ describe("AsaasService", () => {
         cpfCnpj: "12345678909",
       },
       Plan.PRO,
+      9_990,
       "billing-2",
       "cus_existing",
     );
@@ -187,6 +189,7 @@ describe("AsaasService", () => {
         cpfCnpj: "12345678909",
       },
       Plan.BASIC,
+      7_990,
       "billing-3",
     );
 
@@ -235,6 +238,7 @@ describe("AsaasService", () => {
         cpfCnpj: "12345678909",
       },
       Plan.PRO,
+      9_990,
       "billing-existing",
       "cus_existing",
     );
@@ -242,6 +246,118 @@ describe("AsaasService", () => {
     const update = requests.find((request) => request.method === "put");
     assert.equal(update?.url, "/customers/cus_existing");
     assert.deepEqual(update?.data, { cpfCnpj: "12345678909" });
+  });
+
+  it("uses the provided plan price while keeping the Asaas description stable", async () => {
+    const service = makeService(async (config) => {
+      if (config.method === "post" && config.url === "/customers") {
+        return { data: { id: "cus_custom" } };
+      }
+
+      if (config.url === "/customers") {
+        return { data: { data: [] } };
+      }
+
+      if (config.url === "/subscriptions") {
+        assert.equal(config.data?.value, 84.9);
+        assert.equal(config.data?.description, "PeppaBot BASIC");
+        return { data: { id: "sub_custom" } };
+      }
+
+      return {
+        data: {
+          data: [
+            {
+              id: "pay_custom",
+              invoiceUrl: "https://sandbox.asaas.com/i/pay_custom",
+            },
+          ],
+        },
+      };
+    });
+
+    await service.createSubscription(
+      {
+        id: "user-1",
+        name: "User",
+        email: "user@example.com",
+        cpfCnpj: "12345678909",
+      },
+      Plan.BASIC,
+      8_490,
+      "billing-custom",
+    );
+  });
+
+  it("creates a hosted recurring credit card checkout", async () => {
+    const requests: Array<{
+      method: string;
+      url: string;
+      data?: Record<string, unknown>;
+    }> = [];
+    const service = makeService(async (config) => {
+      requests.push(config);
+
+      if (config.url === "/customers/cus_existing") {
+        return {
+          data: { id: "cus_existing", cpfCnpj: "12345678909" },
+        };
+      }
+
+      if (config.url === "/checkouts") {
+        return { data: { id: "checkout-recurring-1" } };
+      }
+
+      return { data: {} };
+    });
+
+    const result = await service.createRecurringCardCheckout(
+      {
+        id: "user-1",
+        name: "User",
+        email: "user@example.com",
+        cpfCnpj: "12345678909",
+      },
+      Plan.PRO,
+      9_990,
+      "billing-recurring-1",
+      "cus_existing",
+    );
+
+    assert.deepEqual(result, {
+      customerId: "cus_existing",
+      checkoutUrl:
+        "https://asaas.com/checkoutSession/show?id=checkout-recurring-1",
+      status: "PENDING",
+    });
+    assert.deepEqual(requests.at(-1)?.data, {
+      billingTypes: ["CREDIT_CARD"],
+      chargeTypes: ["RECURRENT"],
+      minutesToExpire: 100,
+      externalReference: "billing-recurring-1",
+      callback: {
+        cancelUrl: "http://localhost:3000/dashboard/billing",
+        expiredUrl: "http://localhost:3000/dashboard/billing",
+        successUrl: "http://localhost:3000/dashboard/billing",
+      },
+      items: [
+        {
+          name: "PeppaBot PRO",
+          description: "PeppaBot PRO",
+          quantity: 1,
+          value: 99.9,
+        },
+      ],
+      customer: "cus_existing",
+      subscription: {
+        cycle: "MONTHLY",
+        nextDueDate: new Date().toISOString().slice(0, 10),
+      },
+    });
+    assert.doesNotMatch(
+      JSON.stringify(requests.at(-1)?.data),
+      /creditCard|cardNumber|ccv|expiry/i,
+    );
   });
 
   it("cancels an Asaas subscription", async () => {

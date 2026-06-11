@@ -3,6 +3,10 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@promohub/ui/button";
+import {
+  BillingPaymentMethodSelector,
+  type BillingPaymentMethod,
+} from "@/src/components/billing-payment-method";
 import { ErrorBox, LoadingBlock, PageHeader } from "@/src/components/ui-state";
 import { apiFetch } from "@/src/lib/api";
 
@@ -20,6 +24,7 @@ type BillingPlan = {
 
 type BillingSubscription = {
   plan: PlanId;
+  paymentMethod?: BillingPaymentMethod;
   status: string;
   cpfCnpjMasked?: string;
   currentPeriodStart?: string;
@@ -59,7 +64,10 @@ export default function BillingPage() {
   const [usage, setUsage] = useState<PlanUsage | null>(null);
   const [loading, setLoading] = useState(true);
   const [checkoutPlan, setCheckoutPlan] = useState<PlanId | null>(null);
+  const [paymentMethod, setPaymentMethod] =
+    useState<BillingPaymentMethod>("FLEXIBLE");
   const [cpfCnpj, setCpfCnpj] = useState("");
+  const [cpfCnpjError, setCpfCnpjError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -100,15 +108,29 @@ export default function BillingPage() {
   }, []);
 
   async function startCheckout(plan: PlanId) {
+    const cpfCnpjDigits = cpfCnpj.replace(/\D/g, "");
+
+    if (cpfCnpjDigits.length !== 11 && cpfCnpjDigits.length !== 14) {
+      setCpfCnpjError("Informe um CPF com 11 dígitos ou CNPJ com 14 dígitos.");
+      setError(null);
+      setMessage(null);
+      return;
+    }
+
     setCheckoutPlan(plan);
     setError(null);
+    setCpfCnpjError(null);
     setMessage(null);
     const checkoutWindow = window.open("about:blank", "_blank");
 
     try {
       const checkout = await apiFetch<CheckoutResponse>("/billing/checkout", {
         method: "POST",
-        body: JSON.stringify({ plan, cpfCnpj: cpfCnpj.trim() || undefined }),
+        body: JSON.stringify({
+          plan,
+          cpfCnpj: cpfCnpjDigits,
+          paymentMethod,
+        }),
       });
       const billingResult = await apiFetch<BillingSubscription>(
         "/billing/subscription",
@@ -227,19 +249,38 @@ export default function BillingPage() {
           </label>
           <input
             autoComplete="off"
-            className="mt-2 h-10 w-full max-w-md rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none focus:border-slate-950 focus:ring-1 focus:ring-slate-950"
+            aria-invalid={Boolean(cpfCnpjError)}
+            aria-describedby="billing-cpf-cnpj-help"
+            className={`mt-2 h-10 w-full max-w-md rounded-md border bg-white px-3 text-sm text-slate-950 outline-none focus:ring-1 ${
+              cpfCnpjError
+                ? "border-red-300 focus:border-red-600 focus:ring-red-600"
+                : "border-slate-300 focus:border-slate-950 focus:ring-slate-950"
+            }`}
             id="billing-cpf-cnpj"
             inputMode="numeric"
-            onChange={(event) => setCpfCnpj(event.target.value)}
-            placeholder="CPF ou CNPJ"
+            onChange={(event) => {
+              setCpfCnpj(event.target.value);
+              setCpfCnpjError(null);
+            }}
+            placeholder="123.456.789-09 ou 12.345.678/0001-99"
+            required
             type="text"
             value={cpfCnpj}
           />
-          <p className="mt-2 text-xs text-slate-500">
+          <p className="mt-2 text-xs text-slate-500" id="billing-cpf-cnpj-help">
             {billing?.cpfCnpjMasked
               ? `Documento configurado: ${billing.cpfCnpjMasked}`
-              : "Obrigatório para gerar a cobrança no Asaas."}
+              : "Necessário para gerar a cobrança no Asaas."}
           </p>
+          {cpfCnpjError ? (
+            <p className="mt-2 text-sm text-red-700">{cpfCnpjError}</p>
+          ) : null}
+          <div className="mt-5 max-w-2xl">
+            <BillingPaymentMethodSelector
+              value={paymentMethod}
+              onChange={setPaymentMethod}
+            />
+          </div>
         </section>
       ) : null}
 

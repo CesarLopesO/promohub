@@ -7,12 +7,15 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UseGuards,
 } from "@nestjs/common";
 
+import type { AuthenticatedRequest } from "../auth/auth.types";
 import { AdminGuard } from "../auth/admin.guard";
 import { JwtAuthGuard } from "../auth/jwt.guard";
 import { PlanLimitsService } from "../plans/plan-limits.service";
+import { PlanPricesService } from "../billing/plan-prices.service";
 import { UpsertAffiliateGeneratorConfigDto } from "../affiliate/dto/upsert-affiliate-generator-config.dto";
 import { AffiliateGeneratorConfigService } from "../affiliate/services/affiliate-generator-config.service";
 import { WorkerNodesService } from "../workers/worker-nodes.service";
@@ -26,6 +29,7 @@ export class AdminController {
     private readonly planLimits: PlanLimitsService,
     private readonly generatorConfigs: AffiliateGeneratorConfigService,
     private readonly workers: WorkerNodesService,
+    private readonly planPrices: PlanPricesService,
   ) {}
 
   @Get("affiliate-generator-configs")
@@ -49,6 +53,16 @@ export class AdminController {
   @Get("overview")
   overview() {
     return this.adminService.overview();
+  }
+
+  @Get("plan-prices")
+  planPricesList() {
+    return this.planPrices.getPrices();
+  }
+
+  @Patch("plan-prices")
+  updatePlanPrices(@Req() req: AuthenticatedRequest, @Body() body: object) {
+    return this.planPrices.updatePrices(body, req.user.id);
   }
 
   @Get("users")
