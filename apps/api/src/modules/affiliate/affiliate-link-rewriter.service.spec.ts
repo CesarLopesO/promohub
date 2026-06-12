@@ -250,9 +250,12 @@ describe("AffiliateLinkRewriterService", () => {
     assert.equal(providerCalls, 1);
   });
 
-  it("rewrites Shopee links with affiliateId", async () => {
+  it("keeps Shopee links unchanged when the generator is not implemented", async () => {
     const service = makeService([
-      makeCredential(Marketplace.SHOPEE, { affiliateId: "shopee-aff" }),
+      makeCredential(Marketplace.SHOPEE, {
+        apiKey: "shopee-app-id",
+        apiSecret: "shopee-secret",
+      }),
     ]);
 
     const result = await service.rewriteUrlForUser(
@@ -260,9 +263,53 @@ describe("AffiliateLinkRewriterService", () => {
       "https://shope.ee/abc",
     );
 
+    assert.equal(result.rewrittenUrl, "https://shope.ee/abc");
+    assert.equal(result.changed, false);
+    assert.equal(result.canForward, true);
+    assert.equal(result.reason, "SHOPEE_GENERATOR_NOT_IMPLEMENTED");
+  });
+
+  it("returns SHOPEE_CREDENTIAL_MISSING without Shopee credentials", async () => {
+    const service = makeService([]);
+    const result = await service.rewriteUrlForUser(
+      "test-user",
+      "https://shope.ee/abc",
+    );
+
+    assert.equal(result.rewrittenUrl, "https://shope.ee/abc");
+    assert.equal(result.changed, false);
+    assert.equal(result.canForward, true);
+    assert.equal(result.reason, "SHOPEE_CREDENTIAL_MISSING");
+  });
+
+  it("previews Shopee as pending without blocking forwarding", async () => {
+    const originalUrl = "https://shope.ee/abc";
+    const service = makeService(
+      [
+        makeCredential(Marketplace.SHOPEE, {
+          apiKey: "shopee-app-id",
+          apiSecret: "shopee-secret",
+        }),
+      ],
+      [
+        makeMessage({
+          text: `Oferta Shopee: ${originalUrl}`,
+          links: [originalUrl],
+        }),
+      ],
+    );
+
+    const result = await service.rewriteMessageForUser(
+      "test-user",
+      "message-id",
+    );
+
+    assert.equal(result.rewrittenText, `Oferta Shopee: ${originalUrl}`);
+    assert.equal(result.changed, false);
+    assert.equal(result.canForward, true);
     assert.equal(
-      result.rewrittenUrl,
-      "https://shope.ee/abc?affiliate=shopee-aff",
+      result.rewrites[0]?.warning,
+      "Shopee está com credenciais salvas, mas a geração automática ainda não foi ativada.",
     );
   });
 

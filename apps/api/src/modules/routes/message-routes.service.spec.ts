@@ -668,6 +668,42 @@ describe("MessageRoutesService", () => {
     assert.deepEqual(preview.warnings, [warning]);
   });
 
+  it("shows the pending Shopee generator warning in preview", async () => {
+    const warning =
+      "Shopee está com credenciais salvas, mas a geração automática ainda não foi ativada.";
+    const originalUrl = "https://shope.ee/abc";
+    const { service } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: `Promo ${originalUrl}`,
+        },
+      ],
+      rewriteResults: [
+        {
+          originalUrl,
+          rewrittenUrl: originalUrl,
+          marketplace: Marketplace.SHOPEE,
+          changed: false,
+          canForward: true,
+          reason: "SHOPEE_GENERATOR_NOT_IMPLEMENTED",
+          warning,
+        },
+      ],
+    });
+
+    const preview = await service.preview({
+      messageId: "message-id",
+      userId: "test-user",
+    });
+
+    assert.equal(preview.rewrittenText, `Promo ${originalUrl}`);
+    assert.deepEqual(preview.warnings, [warning]);
+  });
+
   it("previews with multiple active routes", async () => {
     const { service } = makeService({
       routes: [
@@ -1236,6 +1272,53 @@ describe("MessageRoutesService", () => {
     assert.equal(response.sentCount, 1);
     assert.equal(forwarded[0]?.mode, "AUTO");
     assert.equal(sentMessages.length, 1);
+  });
+
+  it("auto forwards the original Shopee link while generation is pending", async () => {
+    const originalUrl = "https://shope.ee/abc";
+    const { forwardingService, forwarded, sentMessages } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: `Promo ${originalUrl}`,
+          links: [originalUrl],
+        },
+      ],
+      rewriteResults: [
+        {
+          originalUrl,
+          rewrittenUrl: originalUrl,
+          marketplace: Marketplace.SHOPEE,
+          changed: false,
+          canForward: true,
+          reason: "SHOPEE_GENERATOR_NOT_IMPLEMENTED",
+          warning:
+            "Shopee está com credenciais salvas, mas a geração automática ainda não foi ativada.",
+        },
+      ],
+    });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+      }
+    ).waitRandomDelay = async () => undefined;
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+      { mode: "auto" },
+    );
+
+    assert.equal(response.sentCount, 1);
+    assert.equal(forwarded[0]?.mode, "AUTO");
+    assert.equal(forwarded[0]?.status, "SENT");
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      `Promo ${originalUrl}`,
+    );
   });
 
   it("forwards Amazon affiliate and replaces the WhatsApp link", async () => {

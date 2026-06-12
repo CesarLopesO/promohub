@@ -29,7 +29,8 @@ type BillingSubscription = {
   cpfCnpjMasked?: string;
   currentPeriodStart?: string;
   currentPeriodEnd?: string;
-  providerSubscriptionId?: string;
+  canceledAt?: string;
+  cancelAtPeriodEnd: boolean;
 };
 
 type PlanUsage = {
@@ -70,6 +71,8 @@ export default function BillingPage() {
   const [cpfCnpjError, setCpfCnpjError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [canceling, setCanceling] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -157,6 +160,32 @@ export default function BillingPage() {
     }
   }
 
+  async function cancelSubscription() {
+    setCanceling(true);
+    setError(null);
+    setMessage(null);
+
+    try {
+      const result = await apiFetch<BillingSubscription>(
+        "/billing/subscription",
+        { method: "DELETE" },
+      );
+      setBilling(result);
+      setShowCancelModal(false);
+      setMessage(
+        result.currentPeriodEnd
+          ? `Cancelamento agendado. Acesso até ${formatDateOnly(result.currentPeriodEnd)}.`
+          : "Cancelamento agendado.",
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Erro ao cancelar assinatura.",
+      );
+    } finally {
+      setCanceling(false);
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -181,15 +210,15 @@ export default function BillingPage() {
           <h2 className="text-base font-semibold text-slate-950">
             Assinatura atual
           </h2>
-          <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+          <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-5">
             <SummaryItem label="Plano" value={billing.plan} />
             <SummaryItem
               label="Status"
               value={readSubscriptionStatus(billing.status)}
             />
             <SummaryItem
-              label="Assinatura Asaas"
-              value={billing.providerSubscriptionId ?? "Nenhuma"}
+              label="Método de pagamento"
+              value={readPaymentMethod(billing.paymentMethod)}
             />
             <SummaryItem
               label="Próxima renovação"
@@ -199,7 +228,19 @@ export default function BillingPage() {
                   : "Aguardando pagamento"
               }
             />
+            {billing.canceledAt ? (
+              <SummaryItem
+                label="Data de cancelamento"
+                value={formatDate(billing.canceledAt)}
+              />
+            ) : null}
           </dl>
+          {billing.cancelAtPeriodEnd && billing.currentPeriodEnd ? (
+            <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              Cancelamento agendado. Acesso até{" "}
+              {formatDateOnly(billing.currentPeriodEnd)}.
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -334,6 +375,123 @@ export default function BillingPage() {
           })}
         </section>
       )}
+
+      {billing ? (
+        <details className="group mt-6 rounded-lg border border-slate-200 bg-white">
+          <summary className="cursor-pointer list-none px-5 py-4 text-sm font-semibold text-slate-950">
+            <span className="flex items-center justify-between gap-4">
+              Gerenciar assinatura
+              <span
+                aria-hidden="true"
+                className="text-slate-400 transition-transform group-open:rotate-180"
+              >
+                ▼
+              </span>
+            </span>
+          </summary>
+          <div className="border-t border-slate-200 px-5 py-5">
+            <div className="grid gap-6 md:grid-cols-2">
+              <section>
+                <h3 className="text-sm font-semibold text-slate-950">
+                  Histórico
+                </h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  {billing.currentPeriodStart
+                    ? `Período atual iniciado em ${formatDateOnly(
+                        billing.currentPeriodStart,
+                      )}.`
+                    : "Nenhum período de assinatura registrado."}
+                </p>
+                {billing.canceledAt ? (
+                  <p className="mt-1 text-sm text-slate-600">
+                    Renovação cancelada em{" "}
+                    {formatDateOnly(billing.canceledAt)}.
+                  </p>
+                ) : null}
+              </section>
+
+              <section>
+                <h3 className="text-sm font-semibold text-slate-950">
+                  Informações do plano
+                </h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  Plano {billing.plan} ·{" "}
+                  {readSubscriptionStatus(billing.status)}
+                  {billing.currentPeriodEnd
+                    ? ` · Renovação em ${formatDateOnly(
+                        billing.currentPeriodEnd,
+                      )}`
+                    : ""}
+                </p>
+              </section>
+            </div>
+
+            {billing.plan !== "FREE" &&
+            billing.status === "ACTIVE" &&
+            !billing.cancelAtPeriodEnd ? (
+              <section className="mt-6 border-t border-slate-200 pt-5">
+                <h3 className="text-sm font-semibold text-slate-950">
+                  Cancelar renovação automática
+                </h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  Você continuará com acesso ao plano até o fim do período já
+                  pago.
+                </p>
+                <Button
+                  className="mt-3"
+                  onClick={() => setShowCancelModal(true)}
+                  type="button"
+                  variant="outline"
+                >
+                  Cancelar renovação automática
+                </Button>
+              </section>
+            ) : null}
+          </div>
+        </details>
+      ) : null}
+
+      {showCancelModal && billing?.currentPeriodEnd ? (
+        <div
+          aria-labelledby="cancel-subscription-title"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"
+          role="dialog"
+        >
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+            <h2
+              className="text-lg font-semibold text-slate-950"
+              id="cancel-subscription-title"
+            >
+              Cancelar renovação automática
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-slate-600">
+              Você manterá acesso ao plano até{" "}
+              {formatDateOnly(billing.currentPeriodEnd)}. Após isso, sua conta
+              voltará para o plano FREE.
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <Button
+                disabled={canceling}
+                onClick={() => setShowCancelModal(false)}
+                type="button"
+                variant="secondary"
+              >
+                Voltar
+              </Button>
+              <Button
+                disabled={canceling}
+                onClick={() => void cancelSubscription()}
+                type="button"
+              >
+                {canceling
+                  ? "Cancelando..."
+                  : "Confirmar cancelamento da renovação"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -369,6 +527,12 @@ function formatDate(value: string): string {
   }).format(new Date(value));
 }
 
+function formatDateOnly(value: string): string {
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+  }).format(new Date(value));
+}
+
 function readButtonLabel(
   plan: PlanId,
   current: boolean,
@@ -396,4 +560,13 @@ function readSubscriptionStatus(status: string): string {
   };
 
   return labels[status] ?? status;
+}
+
+function readPaymentMethod(paymentMethod?: BillingPaymentMethod): string {
+  const labels: Record<BillingPaymentMethod, string> = {
+    FLEXIBLE: "Pix, boleto ou cartão",
+    CREDIT_CARD_RECURRING: "Cartão recorrente",
+  };
+
+  return paymentMethod ? labels[paymentMethod] : "Não informado";
 }

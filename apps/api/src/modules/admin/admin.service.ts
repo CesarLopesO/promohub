@@ -221,6 +221,7 @@ export class AdminService {
             currentPeriodStart: true,
             currentPeriodEnd: true,
             canceledAt: true,
+            cancelAtPeriodEnd: true,
             providerCustomerId: true,
             providerSubscriptionId: true,
             providerPaymentId: true,

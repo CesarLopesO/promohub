@@ -40,6 +40,7 @@ type BillingSubscriptionDto = {
   currentPeriodStart?: Date;
   currentPeriodEnd?: Date;
   canceledAt?: Date;
+  cancelAtPeriodEnd: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -59,6 +60,8 @@ type CurrentSubscriptionDto = {
   currentPeriodStart?: Date;
   currentPeriodEnd?: Date;
   providerSubscriptionId?: string;
+  canceledAt?: Date;
+  cancelAtPeriodEnd: boolean;
 };
 
 type PaidPlan = Extract<Plan, "BASIC" | "PRO">;
@@ -123,6 +126,7 @@ export class BillingService {
   }
 
   async me(userId: string): Promise<BillingMeDto> {
+    await this.expireCanceledSubscription(userId);
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -162,6 +166,8 @@ export class BillingService {
       currentPeriodStart: billing.subscription?.currentPeriodStart,
       currentPeriodEnd: billing.subscription?.currentPeriodEnd,
       providerSubscriptionId: billing.subscription?.providerSubscriptionId,
+      canceledAt: billing.subscription?.canceledAt,
+      cancelAtPeriodEnd: billing.subscription?.cancelAtPeriodEnd ?? false,
     };
   }
 
@@ -339,6 +345,10 @@ export class BillingService {
     }
 
     const canUpdateUser = await this.canUpdateUser(subscription);
+    const subscriptionDeletionKeepsAccess =
+      webhook.eventType === "SUBSCRIPTION_DELETED" &&
+      subscription.currentPeriodEnd !== null &&
+      subscription.currentPeriodEnd > new Date();
     const sameActivePayment =
       subscription.status === SubscriptionStatus.ACTIVE &&
       subscription.providerPaymentId === webhook.payment.id;
@@ -367,10 +377,14 @@ export class BillingService {
                 currentPeriodStart: period.start,
                 currentPeriodEnd: period.end,
                 canceledAt: null,
+                cancelAtPeriodEnd: false,
               }
             : {}),
           ...(transition.billingStatus === SubscriptionStatus.CANCELED
             ? { canceledAt: new Date() }
+            : {}),
+          ...(webhook.eventType === "SUBSCRIPTION_DELETED"
+            ? { cancelAtPeriodEnd: subscriptionDeletionKeepsAccess }
             : {}),
         },
       }),
@@ -379,12 +393,20 @@ export class BillingService {
             this.prisma.user.update({
               where: { id: subscription.userId },
               data: {
-                subscriptionStatus: transition.subscriptionStatus,
-                ...(transition.activatePlan
-                  ? { plan: subscription.plan }
-                  : transition.resetPlan
-                    ? { plan: Plan.FREE }
-                    : {}),
+                subscriptionStatus:
+                  webhook.eventType === "SUBSCRIPTION_DELETED"
+                    ? subscriptionDeletionKeepsAccess
+                      ? SubscriptionStatus.ACTIVE
+                      : SubscriptionStatus.CANCELED
+                    : transition.subscriptionStatus,
+                ...(webhook.eventType === "SUBSCRIPTION_DELETED" &&
+                !subscriptionDeletionKeepsAccess
+                  ? { plan: Plan.FREE }
+                  : transition.activatePlan
+                    ? { plan: subscription.plan }
+                    : transition.resetPlan
+                      ? { plan: Plan.FREE }
+                      : {}),
               },
             }),
           ]
@@ -403,7 +425,11 @@ export class BillingService {
       }
 
       await this.referrals.confirmPayment(subscription.userId);
-    } else if (transition.resetPlan) {
+    } else if (
+      transition.resetPlan ||
+      (webhook.eventType === "SUBSCRIPTION_DELETED" &&
+        !subscriptionDeletionKeepsAccess)
+    ) {
       await this.referrals.resetWaitingPeriod(subscription.userId);
     }
 
@@ -411,6 +437,10 @@ export class BillingService {
       where: { id: event.id },
       data: { processedAt: new Date() },
     });
+
+    if (webhook.eventType === "SUBSCRIPTION_DELETED") {
+      await this.expireCanceledSubscription(subscription.userId);
+    }
 
     console.log(
       `[BILLING_WEBHOOK] processed eventId=${webhook.eventId} eventType=${webhook.eventType} providerPaymentId=${this.redactProviderId(webhook.payment.id)}`,
@@ -420,12 +450,26 @@ export class BillingService {
   }
 
   async cancel(userId: string): Promise<CurrentSubscriptionDto> {
+    await this.expireCanceledSubscription(userId);
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { plan: true, subscriptionStatus: true },
+    });
+
+    if (
+      !user ||
+      user.plan === Plan.FREE ||
+      user.subscriptionStatus !== SubscriptionStatus.ACTIVE
+    ) {
+      throw new BadRequestException("No active paid subscription found.");
+    }
+
     const subscription = await this.prisma.billingSubscription.findFirst({
       where: {
         userId,
         provider: "asaas",
         providerSubscriptionId: { not: null },
-        status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.PENDING] },
+        status: SubscriptionStatus.ACTIVE,
       },
       orderBy: { createdAt: "desc" },
     });
@@ -434,33 +478,46 @@ export class BillingService {
       throw new BadRequestException("No active Asaas subscription found.");
     }
 
+    if (!subscription.currentPeriodEnd) {
+      throw new BadRequestException(
+        "The active subscription has no current period end.",
+      );
+    }
+
+    if (subscription.cancelAtPeriodEnd) {
+      return {
+        plan: user.plan,
+        paymentMethod: subscription.paymentMethod,
+        status: user.subscriptionStatus,
+        currentPeriodStart: subscription.currentPeriodStart ?? undefined,
+        currentPeriodEnd: subscription.currentPeriodEnd,
+        providerSubscriptionId: subscription.providerSubscriptionId,
+        canceledAt: subscription.canceledAt ?? undefined,
+        cancelAtPeriodEnd: true,
+      };
+    }
+
     await this.asaas.cancelSubscription(subscription.providerSubscriptionId);
     const now = new Date();
 
-    await this.prisma.$transaction([
-      this.prisma.billingSubscription.update({
-        where: { id: subscription.id },
-        data: {
-          status: SubscriptionStatus.CANCELED,
-          canceledAt: now,
-        },
-      }),
-      this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          plan: Plan.FREE,
-          subscriptionStatus: SubscriptionStatus.CANCELED,
-        },
-      }),
-    ]);
-    await this.referrals.resetWaitingPeriod(userId);
+    await this.prisma.billingSubscription.update({
+      where: { id: subscription.id },
+      data: {
+        status: SubscriptionStatus.CANCELED,
+        canceledAt: now,
+        cancelAtPeriodEnd: true,
+      },
+    });
 
     return {
-      plan: Plan.FREE,
-      status: SubscriptionStatus.CANCELED,
+      plan: user.plan,
+      paymentMethod: subscription.paymentMethod,
+      status: user.subscriptionStatus,
       currentPeriodStart: subscription.currentPeriodStart ?? undefined,
-      currentPeriodEnd: subscription.currentPeriodEnd ?? undefined,
+      currentPeriodEnd: subscription.currentPeriodEnd,
       providerSubscriptionId: subscription.providerSubscriptionId,
+      canceledAt: now,
+      cancelAtPeriodEnd: true,
     };
   }
 
@@ -517,6 +574,13 @@ export class BillingService {
         billingStatus: "ACTIVE",
         subscriptionStatus: SubscriptionStatus.ACTIVE,
         activatePlan: true,
+      };
+    }
+
+    if (eventType === "SUBSCRIPTION_DELETED") {
+      return {
+        billingStatus: SubscriptionStatus.CANCELED,
+        subscriptionStatus: SubscriptionStatus.ACTIVE,
       };
     }
 
@@ -672,6 +736,7 @@ export class BillingService {
       currentPeriodStart: subscription.currentPeriodStart ?? undefined,
       currentPeriodEnd: subscription.currentPeriodEnd ?? undefined,
       canceledAt: subscription.canceledAt ?? undefined,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
       createdAt: subscription.createdAt,
       updatedAt: subscription.updatedAt,
     };
@@ -753,5 +818,39 @@ export class BillingService {
     end.setUTCDate(end.getUTCDate() + 30);
 
     return { start, end };
+  }
+
+  private async expireCanceledSubscription(userId: string): Promise<void> {
+    const now = new Date();
+    const subscription = await this.prisma.billingSubscription.findFirst({
+      where: {
+        userId,
+        cancelAtPeriodEnd: true,
+        currentPeriodEnd: { lte: now },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!subscription) {
+      return;
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.billingSubscription.update({
+        where: { id: subscription.id },
+        data: {
+          status: SubscriptionStatus.CANCELED,
+          cancelAtPeriodEnd: false,
+          canceledAt: subscription.canceledAt ?? now,
+        },
+      }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          plan: Plan.FREE,
+          subscriptionStatus: SubscriptionStatus.CANCELED,
+        },
+      }),
+    ]);
   }
 }

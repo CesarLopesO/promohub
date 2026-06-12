@@ -467,6 +467,23 @@ describe("AsaasService", () => {
     );
   });
 
+  it("parses subscription identifiers from SUBSCRIPTION_DELETED", () => {
+    const service = makeService(async () => ({ data: {} }));
+
+    const result = service.handleWebhook({
+      id: "evt_subscription_deleted",
+      event: "SUBSCRIPTION_DELETED",
+      subscription: {
+        id: "sub_1",
+        externalReference: "billing-1",
+      },
+    });
+
+    assert.equal(result.eventType, "SUBSCRIPTION_DELETED");
+    assert.equal(result.payment.subscriptionId, "sub_1");
+    assert.equal(result.payment.externalReference, "billing-1");
+  });
+
   it("extracts CPF/CNPJ for hashing and masks it in the stored payload", () => {
     const service = makeService(async () => ({ data: {} }));
     const result = service.handleWebhook({

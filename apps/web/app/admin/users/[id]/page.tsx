@@ -27,6 +27,7 @@ type AdminUserDetail = {
     currentPeriodStart?: string;
     currentPeriodEnd?: string;
     canceledAt?: string;
+    cancelAtPeriodEnd: boolean;
   } | null;
   sessions: Array<{
     id: string;
@@ -344,6 +345,18 @@ export default function AdminUserDetailPage() {
                 ? `${formatDate(user.subscription.currentPeriodStart)} até ${formatDate(
                     user.subscription.currentPeriodEnd,
                   )}`
+                : "-"
+            }
+          />
+          <Row
+            label="Cancelar ao fim do período"
+            value={user.subscription?.cancelAtPeriodEnd ? "Sim" : "Não"}
+          />
+          <Row
+            label="Cancelado em"
+            value={
+              user.subscription?.canceledAt
+                ? formatDate(user.subscription.canceledAt)
                 : "-"
             }
           />

@@ -291,6 +291,12 @@ export class AsaasService {
       value.payment && typeof value.payment === "object"
         ? (value.payment as Record<string, unknown>)
         : {};
+    const subscription =
+      value.subscription &&
+      typeof value.subscription === "object" &&
+      !Array.isArray(value.subscription)
+        ? (value.subscription as Record<string, unknown>)
+        : {};
     const paymentCustomer =
       payment.customer &&
       typeof payment.customer === "object" &&
@@ -318,8 +324,12 @@ export class AsaasService {
       ...(cpfCnpj ? { cpfCnpj } : {}),
       payment: {
         id: this.readString(payment.id),
-        subscriptionId: this.readString(payment.subscription),
-        externalReference: this.readString(payment.externalReference),
+        subscriptionId:
+          this.readString(payment.subscription) ??
+          this.readString(subscription.id),
+        externalReference:
+          this.readString(payment.externalReference) ??
+          this.readString(subscription.externalReference),
         ...(this.readString(payment.dueDate)
           ? { dueDate: this.readString(payment.dueDate) }
           : {}),

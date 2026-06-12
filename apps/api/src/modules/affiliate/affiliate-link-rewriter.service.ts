@@ -133,24 +133,28 @@ export class AffiliateLinkRewriterService {
           ? "AMAZON_TAG_NOT_CONFIGURED"
           : marketplace === Marketplace.MAGAZINE_LUIZA
             ? "MAGALU_CREDENTIAL_MISSING"
-            : "MISSING_CREDENTIAL";
+            : marketplace === Marketplace.SHOPEE
+              ? "SHOPEE_CREDENTIAL_MISSING"
+              : "MISSING_CREDENTIAL";
 
       return this.unchanged(
         normalizedUrl,
         marketplace,
         missingReason,
-        marketplace === Marketplace.AMAZON ||
-          marketplace === Marketplace.MAGAZINE_LUIZA
-          ? {
-              canForward: false,
-              ...(marketplace === Marketplace.MAGAZINE_LUIZA
-                ? {
-                    warning:
-                      "Configure sua tag Magazine Luiza para converter links Magalu.",
-                  }
-                : {}),
-            }
-          : undefined,
+        marketplace === Marketplace.SHOPEE
+          ? { canForward: true }
+          : marketplace === Marketplace.AMAZON ||
+              marketplace === Marketplace.MAGAZINE_LUIZA
+            ? {
+                canForward: false,
+                ...(marketplace === Marketplace.MAGAZINE_LUIZA
+                  ? {
+                      warning:
+                        "Configure sua tag Magazine Luiza para converter links Magalu.",
+                    }
+                  : {}),
+              }
+            : undefined,
       );
     }
     const decryptedCredential = decryptAffiliateCredential(credential);

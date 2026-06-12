@@ -5,6 +5,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { ConfigService } from "@nestjs/config";
+import { Plan, SubscriptionStatus } from "@prisma/client";
 import * as bcrypt from "bcrypt";
 
 import { PrismaService } from "../../prisma.service";
@@ -126,6 +127,7 @@ export class AuthService {
   }
 
   async me(userId: string): Promise<AuthenticatedUser> {
+    await this.expireCanceledSubscription(userId);
     const user = await this.prisma.user.findUnique({
       where: {
         id: userId,
@@ -167,5 +169,39 @@ export class AuthService {
     }
 
     return value;
+  }
+
+  private async expireCanceledSubscription(userId: string): Promise<void> {
+    const now = new Date();
+    const subscription = await this.prisma.billingSubscription.findFirst({
+      where: {
+        userId,
+        cancelAtPeriodEnd: true,
+        currentPeriodEnd: { lte: now },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!subscription) {
+      return;
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.billingSubscription.update({
+        where: { id: subscription.id },
+        data: {
+          status: SubscriptionStatus.CANCELED,
+          cancelAtPeriodEnd: false,
+          canceledAt: subscription.canceledAt ?? now,
+        },
+      }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          plan: Plan.FREE,
+          subscriptionStatus: SubscriptionStatus.CANCELED,
+        },
+      }),
+    ]);
   }
 }

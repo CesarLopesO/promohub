@@ -31,6 +31,8 @@ type Credential = {
   storeSlug?: string;
   hasApiKey?: boolean;
   hasApiSecret?: boolean;
+  hasAppId?: boolean;
+  hasSecret?: boolean;
   hasSessionToken?: boolean;
   isActive: boolean;
 };
@@ -125,6 +127,7 @@ const UPCOMING_MARKETPLACES = CREDENTIAL_TUTORIAL_MARKETPLACES.filter(
   ({ marketplace }) =>
     marketplace !== "amazon" &&
     marketplace !== "mercado_livre" &&
+    marketplace !== "shopee" &&
     marketplace !== "magazine_luiza",
 );
 
@@ -135,6 +138,8 @@ export default function CredentialsPage() {
   const [amazonTrackingId, setAmazonTrackingId] = useState("");
   const [mlSessionToken, setMlSessionToken] = useState("");
   const [mlAffiliateId, setMlAffiliateId] = useState("");
+  const [shopeeAppId, setShopeeAppId] = useState("");
+  const [shopeePassword, setShopeePassword] = useState("");
   const [magazineLuizaStoreSlug, setMagazineLuizaStoreSlug] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
@@ -177,7 +182,17 @@ export default function CredentialsPage() {
       ),
     [credentials],
   );
+  const shopeeCredential = useMemo(
+    () => credentials.find((credential) => credential.marketplace === "shopee"),
+    [credentials],
+  );
   const mlHasToken = Boolean(mlCredential?.hasSessionToken);
+  const shopeeHasAppId = Boolean(
+    shopeeCredential?.hasAppId ?? shopeeCredential?.hasApiKey,
+  );
+  const shopeeHasSecret = Boolean(
+    shopeeCredential?.hasSecret ?? shopeeCredential?.hasApiSecret,
+  );
 
   async function loadCredentials() {
     setError(null);
@@ -194,6 +209,8 @@ export default function CredentialsPage() {
     setAmazonTrackingId(amazon?.trackingId ?? "");
     setMlAffiliateId(mercadoLivre?.affiliateId ?? "");
     setMlSessionToken("");
+    setShopeeAppId("");
+    setShopeePassword("");
     setMagazineLuizaStoreSlug(
       result.find((credential) => credential.marketplace === "magazine_luiza")
         ?.storeSlug ?? "",
@@ -229,6 +246,8 @@ export default function CredentialsPage() {
               (credential) => credential.marketplace === "magazine_luiza",
             )?.storeSlug ?? "",
           );
+          setShopeeAppId("");
+          setShopeePassword("");
         }
       } catch (err) {
         if (!cancelled) {
@@ -351,6 +370,40 @@ export default function CredentialsPage() {
         err instanceof Error
           ? err.message
           : "Erro ao salvar credencial Magazine Luiza.",
+      );
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function saveShopee(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!shopeeAppId.trim() && !shopeeHasAppId) {
+      setError("Informe o AppID da Shopee.");
+      return;
+    }
+
+    if (!shopeePassword.trim() && !shopeeHasSecret) {
+      setError("Informe a senha da Shopee.");
+      return;
+    }
+
+    setSaving("shopee");
+    setError(null);
+
+    try {
+      await saveCredential(shopeeCredential?.id, {
+        marketplace: "shopee",
+        ...(shopeeAppId.trim() ? { appId: shopeeAppId.trim() } : {}),
+        ...(shopeePassword.trim() ? { password: shopeePassword.trim() } : {}),
+      });
+      await loadCredentials();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Erro ao salvar credenciais Shopee.",
       );
     } finally {
       setSaving(null);
@@ -732,6 +785,106 @@ export default function CredentialsPage() {
                 </dl>
               </div>
             </form>
+
+            <form
+              className="rounded-lg border border-slate-200 bg-white p-5"
+              onSubmit={saveShopee}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-950">
+                    Shopee
+                  </h2>
+                </div>
+                <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                  Geração pendente
+                </span>
+              </div>
+
+              <p className="mt-3 text-sm text-slate-600">
+                Use as credenciais do portal de afiliados Shopee.
+              </p>
+
+              <label className="mt-5 block text-sm font-medium text-slate-700">
+                AppID
+                <input
+                  autoComplete="off"
+                  className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
+                  onChange={(event) => setShopeeAppId(event.target.value)}
+                  placeholder={
+                    shopeeHasAppId
+                      ? "Preencha apenas para substituir"
+                      : "Informe o AppID"
+                  }
+                  required={!shopeeHasAppId}
+                  type="text"
+                  value={shopeeAppId}
+                />
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  O AppID salvo não é exibido novamente.
+                </span>
+              </label>
+
+              <label className="mt-4 block text-sm font-medium text-slate-700">
+                Senha
+                <input
+                  autoComplete="new-password"
+                  className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
+                  onChange={(event) => setShopeePassword(event.target.value)}
+                  placeholder={
+                    shopeeHasSecret
+                      ? "Preencha apenas para substituir"
+                      : "Informe a senha"
+                  }
+                  required={!shopeeHasSecret}
+                  type="password"
+                  value={shopeePassword}
+                />
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  A senha é armazenada criptografada e não é exibida novamente.
+                </span>
+              </label>
+
+              <CredentialTutorialContent
+                marketplace="shopee"
+                settings={tutorialSettings}
+              />
+
+              <div className="mt-5">
+                <Button disabled={saving === "shopee"} type="submit">
+                  <Save className="h-4 w-4" aria-hidden="true" />
+                  {saving === "shopee"
+                    ? "Salvando..."
+                    : "Salvar credenciais Shopee"}
+                </Button>
+              </div>
+
+              <div className="mt-5 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                Shopee está com credenciais salvas, mas a geração automática
+                ainda não foi ativada. Links Shopee serão encaminhados sem
+                alteração.
+              </div>
+
+              <div className="mt-6 border-t border-slate-200 pt-5">
+                <h3 className="text-sm font-semibold text-slate-950">
+                  Configuração atual
+                </h3>
+                <dl className="mt-3 grid gap-2 text-sm">
+                  <Row
+                    label="Status"
+                    value={shopeeCredential?.isActive ? "Ativa" : "Inativa"}
+                  />
+                  <Row
+                    label="AppID"
+                    value={shopeeHasAppId ? "Configurado" : "Não configurado"}
+                  />
+                  <Row
+                    label="Senha"
+                    value={shopeeHasSecret ? "Configurada" : "Não configurada"}
+                  />
+                </dl>
+              </div>
+            </form>
           </section>
 
           <section className="mt-6">
@@ -772,7 +925,7 @@ function MarketplaceOverview() {
             Suportados
           </p>
           <ul className="mt-2 space-y-2 text-sm text-slate-700">
-            {["Amazon", "Mercado Livre", "Magazine Luiza"].map(
+            {["Amazon", "Mercado Livre", "Magazine Luiza", "Shopee"].map(
               (marketplace) => (
                 <li className="flex items-center gap-2" key={marketplace}>
                   <CheckCircle2

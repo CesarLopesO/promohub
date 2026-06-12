@@ -24,6 +24,7 @@ type StoredBillingSubscription = {
   currentPeriodStart: Date | null;
   currentPeriodEnd: Date | null;
   canceledAt: Date | null;
+  cancelAtPeriodEnd: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -41,6 +42,7 @@ function makeService(options?: {
   duplicateProcessed?: boolean;
   cpfCnpj?: string | null;
   prices?: Partial<Record<Plan, number>>;
+  cancelError?: Error;
 }) {
   const user: {
     id: string;
@@ -72,6 +74,7 @@ function makeService(options?: {
   }> = [];
   const referralConfirmations: string[] = [];
   const referralResets: string[] = [];
+  const canceledProviderSubscriptions: string[] = [];
   const prisma = {
     user: {
       findUnique: async () => user,
@@ -94,6 +97,8 @@ function makeService(options?: {
           providerSubscriptionId?: string | { not: null | string };
           providerPaymentId?: string;
           status?: SubscriptionStatus | { in: SubscriptionStatus[] };
+          cancelAtPeriodEnd?: boolean;
+          currentPeriodEnd?: { lte: Date };
           OR?: Array<Record<string, string>>;
         };
         orderBy?: { createdAt: "desc" };
@@ -121,6 +126,21 @@ function makeService(options?: {
           if (
             typeof where.status === "object" &&
             !where.status.in.includes(subscription.status)
+          ) {
+            return false;
+          }
+
+          if (
+            where.cancelAtPeriodEnd !== undefined &&
+            subscription.cancelAtPeriodEnd !== where.cancelAtPeriodEnd
+          ) {
+            return false;
+          }
+
+          if (
+            where.currentPeriodEnd?.lte &&
+            (!subscription.currentPeriodEnd ||
+              subscription.currentPeriodEnd > where.currentPeriodEnd.lte)
           ) {
             return false;
           }
@@ -195,6 +215,7 @@ function makeService(options?: {
           currentPeriodStart: null,
           currentPeriodEnd: null,
           canceledAt: null,
+          cancelAtPeriodEnd: false,
           createdAt: new Date(),
           updatedAt: new Date(),
           ...data,
@@ -313,26 +334,39 @@ function makeService(options?: {
         status: "PENDING",
       };
     },
-    cancelSubscription: async () => undefined,
+    cancelSubscription: async (subscriptionId: string) => {
+      if (options?.cancelError) {
+        throw options.cancelError;
+      }
+
+      canceledProviderSubscriptions.push(subscriptionId);
+    },
     handleWebhook: (payload: {
       id: string;
       event: string;
-      payment: {
+      payment?: {
         id: string;
         subscription: string;
         externalReference?: string;
         cpfCnpj?: string;
       };
+      subscription?: {
+        id: string;
+        externalReference?: string;
+      };
     }) => ({
       eventId: payload.id,
       eventType: payload.event,
-      ...(payload.payment.cpfCnpj
+      ...(payload.payment?.cpfCnpj
         ? { cpfCnpj: payload.payment.cpfCnpj.replace(/\D/g, "") }
         : {}),
       payment: {
-        id: payload.payment.id,
-        subscriptionId: payload.payment.subscription,
-        externalReference: payload.payment.externalReference,
+        id: payload.payment?.id,
+        subscriptionId:
+          payload.payment?.subscription ?? payload.subscription?.id,
+        externalReference:
+          payload.payment?.externalReference ??
+          payload.subscription?.externalReference,
       },
       payload,
     }),
@@ -390,6 +424,7 @@ function makeService(options?: {
     asaasCalls,
     referralConfirmations,
     referralResets,
+    canceledProviderSubscriptions,
   };
 }
 
@@ -858,20 +893,130 @@ describe("BillingService", () => {
     assert.equal(result.providerSubscriptionId, "sub_1");
   });
 
-  it("cancels the Asaas subscription and downgrades immediately", async () => {
-    const { service, user, subscriptions, referralResets } = makeService();
+  it("schedules cancellation in Asaas and keeps BASIC until currentPeriodEnd", async () => {
+    const { service, user, subscriptions, canceledProviderSubscriptions } =
+      makeService();
     await createCheckout(service, Plan.BASIC);
     user.plan = Plan.BASIC;
     user.subscriptionStatus = SubscriptionStatus.ACTIVE;
     subscriptions[0]!.status = SubscriptionStatus.ACTIVE;
+    subscriptions[0]!.currentPeriodEnd = new Date(Date.now() + 86_400_000);
 
     const result = await service.cancel("user-1");
 
+    assert.equal(result.plan, Plan.BASIC);
+    assert.equal(result.status, SubscriptionStatus.ACTIVE);
+    assert.equal(result.cancelAtPeriodEnd, true);
+    assert.equal(user.plan, Plan.BASIC);
+    assert.equal(user.subscriptionStatus, SubscriptionStatus.ACTIVE);
+    assert.equal(subscriptions[0]?.status, SubscriptionStatus.CANCELED);
+    assert.equal(subscriptions[0]?.cancelAtPeriodEnd, true);
+    assert.ok(subscriptions[0]?.canceledAt);
+    assert.deepEqual(canceledProviderSubscriptions, ["sub_1"]);
+  });
+
+  it("expires a scheduled cancellation after currentPeriodEnd", async () => {
+    const { service, user, subscriptions } = makeService();
+    await createCheckout(service, Plan.BASIC);
+    user.plan = Plan.BASIC;
+    user.subscriptionStatus = SubscriptionStatus.ACTIVE;
+    subscriptions[0]!.status = SubscriptionStatus.CANCELED;
+    subscriptions[0]!.cancelAtPeriodEnd = true;
+    subscriptions[0]!.currentPeriodEnd = new Date(Date.now() - 1_000);
+    subscriptions[0]!.canceledAt = new Date(Date.now() - 86_400_000);
+
+    const result = await service.subscription("user-1");
+
     assert.equal(result.plan, Plan.FREE);
     assert.equal(result.status, SubscriptionStatus.CANCELED);
+    assert.equal(result.cancelAtPeriodEnd, false);
     assert.equal(user.plan, Plan.FREE);
     assert.equal(user.subscriptionStatus, SubscriptionStatus.CANCELED);
+  });
+
+  it("does not mark cancellation when Asaas fails", async () => {
+    const { service, user, subscriptions } = makeService({
+      cancelError: new Error("Asaas unavailable"),
+    });
+    await createCheckout(service, Plan.PRO);
+    user.plan = Plan.PRO;
+    user.subscriptionStatus = SubscriptionStatus.ACTIVE;
+    subscriptions[0]!.status = SubscriptionStatus.ACTIVE;
+    subscriptions[0]!.currentPeriodEnd = new Date(Date.now() + 86_400_000);
+
+    await assert.rejects(() => service.cancel("user-1"), /Asaas unavailable/);
+
+    assert.equal(user.plan, Plan.PRO);
+    assert.equal(user.subscriptionStatus, SubscriptionStatus.ACTIVE);
+    assert.equal(subscriptions[0]?.status, SubscriptionStatus.ACTIVE);
+    assert.equal(subscriptions[0]?.cancelAtPeriodEnd, false);
+    assert.equal(subscriptions[0]?.canceledAt, null);
+  });
+
+  it("does not allow FREE users to cancel", async () => {
+    const { service, canceledProviderSubscriptions } = makeService();
+
+    await assert.rejects(
+      () => service.cancel("user-1"),
+      /No active paid subscription/,
+    );
+    assert.deepEqual(canceledProviderSubscriptions, []);
+  });
+
+  it("reactivates a new payment after cancellation", async () => {
+    const { service, user, subscriptions } = makeService();
+    await createCheckout(service, Plan.BASIC);
+    user.plan = Plan.BASIC;
+    user.subscriptionStatus = SubscriptionStatus.ACTIVE;
+    subscriptions[0]!.status = SubscriptionStatus.CANCELED;
+    subscriptions[0]!.cancelAtPeriodEnd = true;
+    subscriptions[0]!.canceledAt = new Date();
+    subscriptions[0]!.currentPeriodEnd = new Date(Date.now() + 86_400_000);
+
+    await createCheckout(service, Plan.PRO);
+    subscriptions[1]!.providerSubscriptionId = "sub_2";
+    subscriptions[1]!.providerPaymentId = "pay_2";
+
+    await service.handleAsaasWebhook("secret", {
+      id: "evt_new_subscription_confirmed",
+      event: "PAYMENT_CONFIRMED",
+      payment: {
+        id: "pay_2",
+        subscription: "sub_2",
+        externalReference: "billing-2",
+      },
+    });
+
+    assert.equal(user.plan, Plan.PRO);
+    assert.equal(user.subscriptionStatus, SubscriptionStatus.ACTIVE);
     assert.equal(subscriptions[0]?.status, SubscriptionStatus.CANCELED);
-    assert.deepEqual(referralResets, ["user-1"]);
+    assert.equal(subscriptions[0]?.cancelAtPeriodEnd, true);
+    assert.equal(subscriptions[1]?.status, SubscriptionStatus.ACTIVE);
+    assert.equal(subscriptions[1]?.cancelAtPeriodEnd, false);
+    assert.equal(subscriptions[1]?.canceledAt, null);
+  });
+
+  it("schedules cancellation from a SUBSCRIPTION_DELETED webhook", async () => {
+    const { service, user, subscriptions } = makeService();
+    await createCheckout(service, Plan.BASIC);
+    user.plan = Plan.BASIC;
+    user.subscriptionStatus = SubscriptionStatus.ACTIVE;
+    subscriptions[0]!.status = SubscriptionStatus.ACTIVE;
+    subscriptions[0]!.currentPeriodEnd = new Date(Date.now() + 86_400_000);
+
+    const result = await service.handleAsaasWebhook("secret", {
+      id: "evt_subscription_deleted",
+      event: "SUBSCRIPTION_DELETED",
+      subscription: {
+        id: "sub_1",
+        externalReference: "billing-1",
+      },
+    });
+
+    assert.equal(result.processed, true);
+    assert.equal(user.plan, Plan.BASIC);
+    assert.equal(user.subscriptionStatus, SubscriptionStatus.ACTIVE);
+    assert.equal(subscriptions[0]?.status, SubscriptionStatus.CANCELED);
+    assert.equal(subscriptions[0]?.cancelAtPeriodEnd, true);
   });
 });

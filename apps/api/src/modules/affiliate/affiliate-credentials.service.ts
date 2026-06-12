@@ -23,6 +23,8 @@ export type AffiliateCredentialDto = {
   storeSlug?: string;
   hasApiKey: boolean;
   hasApiSecret: boolean;
+  hasAppId: boolean;
+  hasSecret: boolean;
   hasSessionToken: boolean;
   isActive: boolean;
   createdAt: Date;
@@ -101,7 +103,11 @@ export class AffiliateCredentialsService {
       body.marketplace === undefined
         ? credential.marketplace
         : this.normalizeMarketplace(body.marketplace);
-    const data = this.toCredentialData(body, marketplace, credential.storeSlug);
+    const data = this.toCredentialData(body, marketplace, {
+      storeSlug: credential.storeSlug,
+      apiKey: credential.apiKey,
+      apiSecret: credential.apiSecret,
+    });
     const migratedSecrets = encryptCredentialSecrets({
       apiKey: credential.apiKey,
       apiSecret: credential.apiSecret,
@@ -168,12 +174,26 @@ export class AffiliateCredentialsService {
   private toCredentialData(
     body: CreateAffiliateCredentialDto | UpdateAffiliateCredentialDto,
     marketplace: string,
-    currentStoreSlug?: string | null,
+    current?: {
+      storeSlug?: string | null;
+      apiKey?: string | null;
+      apiSecret?: string | null;
+    },
   ) {
     const storeSlug =
       body.storeSlug === undefined
-        ? currentStoreSlug
+        ? current?.storeSlug
         : this.normalizeStoreSlug(body.storeSlug);
+    const appIdInput = body.appId ?? body.apiKey;
+    const secretInput = body.password ?? body.appSecret ?? body.apiSecret;
+    const appId =
+      appIdInput === undefined
+        ? current?.apiKey
+        : this.normalizeNullableString(appIdInput);
+    const secret =
+      secretInput === undefined
+        ? current?.apiSecret
+        : this.normalizeNullableString(secretInput);
 
     if (marketplace === Marketplace.MAGAZINE_LUIZA && !storeSlug) {
       throw new BadRequestException(
@@ -181,16 +201,18 @@ export class AffiliateCredentialsService {
       );
     }
 
+    if (marketplace === Marketplace.SHOPEE && (!appId || !secret)) {
+      throw new BadRequestException(
+        "Fields appId and password are required for shopee.",
+      );
+    }
+
     const data = {
       ...(body.affiliateId === undefined
         ? {}
         : { affiliateId: this.normalizeNullableString(body.affiliateId) }),
-      ...(body.apiKey === undefined
-        ? {}
-        : { apiKey: this.normalizeNullableString(body.apiKey) }),
-      ...(body.apiSecret === undefined
-        ? {}
-        : { apiSecret: this.normalizeNullableString(body.apiSecret) }),
+      ...(appIdInput === undefined ? {} : { apiKey: appId }),
+      ...(secretInput === undefined ? {} : { apiSecret: secret }),
       ...(body.trackingId === undefined
         ? {}
         : { trackingId: this.normalizeNullableString(body.trackingId) }),
@@ -229,6 +251,12 @@ export class AffiliateCredentialsService {
       storeSlug: credential.storeSlug ?? undefined,
       hasApiKey: Boolean(credential.apiKey),
       hasApiSecret: Boolean(credential.apiSecret),
+      hasAppId:
+        credential.marketplace === Marketplace.SHOPEE &&
+        Boolean(credential.apiKey),
+      hasSecret:
+        credential.marketplace === Marketplace.SHOPEE &&
+        Boolean(credential.apiSecret),
       hasSessionToken: hasSessionToken(credential.metadata),
       isActive: credential.isActive,
       createdAt: credential.createdAt,

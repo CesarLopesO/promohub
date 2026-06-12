@@ -197,6 +197,8 @@ describe("AffiliateCredentialsService", () => {
   });
 
   it("continues saving Amazon, Mercado Livre, and Shopee credentials", async () => {
+    process.env.APP_ENCRYPTION_KEY =
+      "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
     const store = new Map<string, StoredCredential>();
     const prisma = {
       affiliateCredential: {
@@ -231,11 +233,126 @@ describe("AffiliateCredentialsService", () => {
     const shopee = await service.create({
       userId: "test-user",
       marketplace: Marketplace.SHOPEE,
-      affiliateId: "shopee-tag",
+      appId: "shopee-app-id",
+      password: "shopee-password",
     });
 
     assert.equal(amazon.trackingId, "meutag-20");
     assert.equal(mercadoLivre.affiliateId, "loce6396673");
-    assert.equal(shopee.affiliateId, "shopee-tag");
+    assert.equal(shopee.hasAppId, true);
+    assert.equal(shopee.hasSecret, true);
+  });
+
+  it("encrypts Shopee credentials and lists them without exposing AppID or password", async () => {
+    process.env.APP_ENCRYPTION_KEY =
+      "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+    const store = new Map<string, StoredCredential>();
+    const prisma = {
+      affiliateCredential: {
+        upsert: async ({
+          create,
+        }: {
+          create: Omit<StoredCredential, "id" | "createdAt" | "updatedAt">;
+        }) => {
+          const credential = {
+            id: "shopee-credential",
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            ...create,
+          };
+          store.set(`${create.userId}:${create.marketplace}`, credential);
+          return credential;
+        },
+        findMany: async ({ where }: { where: { userId?: string } }) =>
+          Array.from(store.values()).filter(
+            (credential) =>
+              credential.isActive &&
+              (!where.userId || credential.userId === where.userId),
+          ),
+        findFirst: async ({
+          where,
+        }: {
+          where: { id: string; userId: string };
+        }) =>
+          Array.from(store.values()).find(
+            (credential) =>
+              credential.id === where.id && credential.userId === where.userId,
+          ) ?? null,
+        update: async ({
+          where,
+          data,
+        }: {
+          where: { id: string };
+          data: Partial<StoredCredential>;
+        }) => {
+          const credential = Array.from(store.values()).find(
+            (item) => item.id === where.id,
+          );
+          assert.ok(credential);
+          const updated = {
+            ...credential,
+            ...data,
+            updatedAt: new Date(),
+          };
+          store.set(`${updated.userId}:${updated.marketplace}`, updated);
+          return updated;
+        },
+      },
+    };
+    const service = new AffiliateCredentialsService(prisma as never);
+
+    const created = await service.create({
+      userId: "test-user",
+      marketplace: Marketplace.SHOPEE,
+      appId: "app-123",
+      password: "secret-password",
+    });
+    const [listed] = await service.list("test-user");
+    const updated = await service.update(
+      "shopee-credential",
+      { marketplace: Marketplace.SHOPEE },
+      "test-user",
+    );
+    const stored = store.get("test-user:shopee");
+
+    assert.match(stored?.apiKey ?? "", /^enc:v1:/);
+    assert.match(stored?.apiSecret ?? "", /^enc:v1:/);
+    assert.equal(created.hasAppId, true);
+    assert.equal(created.hasSecret, true);
+    assert.equal(listed?.hasAppId, true);
+    assert.equal(listed?.hasSecret, true);
+    assert.equal(updated.hasAppId, true);
+    assert.equal(updated.hasSecret, true);
+    assert.equal("appId" in created, false);
+    assert.equal("password" in created, false);
+    assert.equal("apiKey" in created, false);
+    assert.equal("apiSecret" in created, false);
+    assert.equal("appId" in (listed ?? {}), false);
+    assert.equal("password" in (listed ?? {}), false);
+    assert.equal("apiKey" in (listed ?? {}), false);
+    assert.equal("apiSecret" in (listed ?? {}), false);
+  });
+
+  it("rejects Shopee credentials without AppID or password", async () => {
+    const service = new AffiliateCredentialsService({} as never);
+
+    await assert.rejects(
+      () =>
+        service.create({
+          userId: "test-user",
+          marketplace: Marketplace.SHOPEE,
+          password: "secret",
+        }),
+      /appId and password/,
+    );
+    await assert.rejects(
+      () =>
+        service.create({
+          userId: "test-user",
+          marketplace: Marketplace.SHOPEE,
+          appId: "app-id",
+        }),
+      /appId and password/,
+    );
   });
 });

@@ -44,6 +44,15 @@ describe("Auth JWT integration", () => {
     status: string;
     rewardCents: number;
   }> = [];
+  const billingSubscriptions: Array<{
+    id: string;
+    userId: string;
+    status: string;
+    cancelAtPeriodEnd: boolean;
+    currentPeriodEnd: Date | null;
+    canceledAt: Date | null;
+    createdAt: Date;
+  }> = [];
   const now = new Date("2026-06-01T12:00:00.000Z");
 
   before(async () => {
@@ -120,6 +129,18 @@ describe("Auth JWT integration", () => {
               (where.email && user.email === where.email) ||
               (where.id && user.id === where.id),
           ) ?? null,
+        update: async ({
+          where,
+          data,
+        }: {
+          where: { id: string };
+          data: Partial<StoredUser>;
+        }) => {
+          const user = users.find((item) => item.id === where.id);
+          assert.ok(user);
+          Object.assign(user, data);
+          return user;
+        },
       },
       referralCode: {
         findUnique: async ({ where }: { where: { code: string } }) => {
@@ -139,9 +160,46 @@ describe("Auth JWT integration", () => {
       referral: {
         create: createReferral,
       },
+      billingSubscription: {
+        findFirst: async ({
+          where,
+        }: {
+          where: {
+            userId: string;
+            cancelAtPeriodEnd: boolean;
+            currentPeriodEnd: { lte: Date };
+          };
+        }) =>
+          billingSubscriptions.find(
+            (subscription) =>
+              subscription.userId === where.userId &&
+              subscription.cancelAtPeriodEnd === where.cancelAtPeriodEnd &&
+              subscription.currentPeriodEnd !== null &&
+              subscription.currentPeriodEnd <= where.currentPeriodEnd.lte,
+          ) ?? null,
+        update: async ({
+          where,
+          data,
+        }: {
+          where: { id: string };
+          data: Partial<(typeof billingSubscriptions)[number]>;
+        }) => {
+          const subscription = billingSubscriptions.find(
+            (item) => item.id === where.id,
+          );
+          assert.ok(subscription);
+          Object.assign(subscription, data);
+          return subscription;
+        },
+      },
       $transaction: async <T>(
-        callback: (transaction: typeof transactionClient) => Promise<T>,
-      ) => callback(transactionClient),
+        work:
+          | Array<Promise<unknown>>
+          | ((transaction: typeof transactionClient) => Promise<T>),
+      ) =>
+        typeof work === "function"
+          ? work(transactionClient)
+          : Promise.all(work),
     };
 
     moduleRef = await Test.createTestingModule({
@@ -285,6 +343,32 @@ describe("Auth JWT integration", () => {
       plan: "FREE",
       subscriptionStatus: "NONE",
     });
+  });
+
+  it("expires a scheduled cancellation in auth/me", async () => {
+    const registered = await authService.register({
+      email: "expired-subscription@example.com",
+      password: "123456",
+    });
+    const storedUser = users.find((user) => user.id === registered.id);
+    assert.ok(storedUser);
+    storedUser.plan = "BASIC";
+    storedUser.subscriptionStatus = "ACTIVE";
+    billingSubscriptions.push({
+      id: "expired-billing",
+      userId: registered.id,
+      status: "CANCELED",
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: new Date(Date.now() - 1_000),
+      canceledAt: new Date(Date.now() - 86_400_000),
+      createdAt: new Date(),
+    });
+
+    const result = await authService.me(registered.id);
+
+    assert.equal(result.plan, "FREE");
+    assert.equal(result.subscriptionStatus, "CANCELED");
+    assert.equal(billingSubscriptions.at(-1)?.cancelAtPeriodEnd, false);
   });
 
   it("rejects a protected route without token", async () => {

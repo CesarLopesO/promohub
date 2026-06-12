@@ -35,8 +35,10 @@ function makeController() {
     cancel: async (userId: string) => {
       calls.push({ method: "cancel", value: userId });
       return {
-        plan: Plan.FREE,
-        status: SubscriptionStatus.CANCELED,
+        plan: Plan.PRO,
+        status: SubscriptionStatus.ACTIVE,
+        currentPeriodEnd: new Date("2026-07-09T00:00:00.000Z"),
+        cancelAtPeriodEnd: true,
       };
     },
   };
@@ -113,8 +115,10 @@ describe("BillingController", () => {
     const result = await controller.cancelSubscription(request);
 
     assert.deepEqual(result, {
-      plan: Plan.FREE,
-      status: SubscriptionStatus.CANCELED,
+      plan: Plan.PRO,
+      status: SubscriptionStatus.ACTIVE,
+      currentPeriodEnd: new Date("2026-07-09T00:00:00.000Z"),
+      cancelAtPeriodEnd: true,
     });
   });
 

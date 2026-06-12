@@ -36,6 +36,13 @@ describe("extractLinks", () => {
     ]);
   });
 
+  it("captures Shopee Brazil links", () => {
+    assert.deepEqual(
+      extractLinks("https://www.shopee.com.br/produto-i.123.456"),
+      ["https://www.shopee.com.br/produto-i.123.456"],
+    );
+  });
+
   it("normalizes Magazine Luiza links without protocol", () => {
     assert.deepEqual(extractLinks("www.magazineluiza.com.br/produto/p/abc"), [
       "https://www.magazineluiza.com.br/produto/p/abc",
