@@ -19,6 +19,7 @@ function makeCredential(tag?: string): AffiliateCredential {
     apiKey: null,
     apiSecret: null,
     trackingId: tag ?? null,
+    storeSlug: null,
     metadata: null,
     isActive: true,
     createdAt: new Date("2026-06-01T12:00:00.000Z"),

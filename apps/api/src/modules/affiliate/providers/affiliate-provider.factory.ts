@@ -2,6 +2,7 @@ import { Marketplace } from "../helpers/detect-marketplace";
 import { AmazonAffiliateProvider } from "./amazon.provider";
 import type { AffiliateProvider } from "./affiliate-provider.interface";
 import { MercadoLivreAffiliateProvider } from "./mercadolivre.provider";
+import { MagazineLuizaAffiliateProvider } from "./magazine-luiza.provider";
 import { ShopeeAffiliateProvider } from "./shopee.provider";
 
 export function getAffiliateProvider(
@@ -16,6 +17,8 @@ export function getAffiliateProvider(
       return mercadoLivreProvider;
     case Marketplace.SHOPEE:
       return new ShopeeAffiliateProvider();
+    case Marketplace.MAGAZINE_LUIZA:
+      return new MagazineLuizaAffiliateProvider();
     case Marketplace.UNKNOWN:
     case Marketplace.WHATSAPP:
       return null;

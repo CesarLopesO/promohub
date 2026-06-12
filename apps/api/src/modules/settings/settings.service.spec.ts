@@ -12,6 +12,64 @@ import { DEFAULT_FREE_PLAN_SIGNATURE } from "./settings.types";
 
 type StoredSettings = Map<string, string>;
 
+const TUTORIAL_MARKETPLACE_KEYS = [
+  [
+    "credentialTutorialAmazonTitle",
+    "credentialTutorialAmazonBody",
+    "credentialTutorialAmazonVideoUrl",
+  ],
+  [
+    "credentialTutorialMercadoLivreTitle",
+    "credentialTutorialMercadoLivreBody",
+    "credentialTutorialMercadoLivreVideoUrl",
+  ],
+  [
+    "credentialTutorialShopeeTitle",
+    "credentialTutorialShopeeBody",
+    "credentialTutorialShopeeVideoUrl",
+  ],
+  [
+    "credentialTutorialAliExpressTitle",
+    "credentialTutorialAliExpressBody",
+    "credentialTutorialAliExpressVideoUrl",
+  ],
+  [
+    "credentialTutorialMagazineLuizaTitle",
+    "credentialTutorialMagazineLuizaBody",
+    "credentialTutorialMagazineLuizaVideoUrl",
+  ],
+  [
+    "credentialTutorialCasasBahiaTitle",
+    "credentialTutorialCasasBahiaBody",
+    "credentialTutorialCasasBahiaVideoUrl",
+  ],
+  [
+    "credentialTutorialPontoTitle",
+    "credentialTutorialPontoBody",
+    "credentialTutorialPontoVideoUrl",
+  ],
+  [
+    "credentialTutorialExtraTitle",
+    "credentialTutorialExtraBody",
+    "credentialTutorialExtraVideoUrl",
+  ],
+  [
+    "credentialTutorialKabumTitle",
+    "credentialTutorialKabumBody",
+    "credentialTutorialKabumVideoUrl",
+  ],
+  [
+    "credentialTutorialNetshoesTitle",
+    "credentialTutorialNetshoesBody",
+    "credentialTutorialNetshoesVideoUrl",
+  ],
+] as const;
+
+const TUTORIAL_SETTING_KEYS = TUTORIAL_MARKETPLACE_KEYS.flat();
+const EMPTY_TUTORIAL_SETTINGS = Object.fromEntries(
+  TUTORIAL_SETTING_KEYS.map((key) => [key, ""]),
+);
+
 function makeService(initial: Record<string, string> = {}) {
   const stored: StoredSettings = new Map(Object.entries(initial));
   const appSetting = {
@@ -71,6 +129,28 @@ describe("SettingsService", () => {
     assert.equal(result.supportWhatsappUrl, url);
   });
 
+  it("allows an ADMIN endpoint to save each marketplace tutorial", async () => {
+    for (const [titleKey, bodyKey, videoUrlKey] of TUTORIAL_MARKETPLACE_KEYS) {
+      const { service, stored } = makeService();
+      const title = `Como obter ${titleKey}`;
+      const body = "1. Faça login.\n2. Copie a credencial.";
+      const videoUrl = `https://youtube.com/watch?v=${videoUrlKey}`;
+
+      const result = await service.updateSettings({
+        [titleKey]: ` ${title} `,
+        [bodyKey]: ` ${body} `,
+        [videoUrlKey]: ` ${videoUrl} `,
+      });
+
+      assert.equal(result[titleKey], title);
+      assert.equal(result[bodyKey], body);
+      assert.equal(result[videoUrlKey], videoUrl);
+      assert.equal(stored.get(titleKey), title);
+      assert.equal(stored.get(bodyKey), body);
+      assert.equal(stored.get(videoUrlKey), videoUrl);
+    }
+  });
+
   it("protects the admin settings controller with JWT and ADMIN guards", () => {
     const guards = Reflect.getMetadata(
       GUARDS_METADATA,
@@ -98,10 +178,15 @@ describe("SettingsService", () => {
     );
   });
 
-  it("returns only public support settings", async () => {
+  it("returns credential tutorials in public settings", async () => {
     const { service } = makeService({
       supportEmail: "suporte@peppabot.com",
       supportWhatsappUrl: "https://api.whatsapp.com/send?phone=5538999999999",
+      credentialTutorialAmazonTitle: "Tutorial Amazon",
+      credentialTutorialAmazonBody: "Passo 1\nPasso 2",
+      credentialTutorialAmazonVideoUrl: "https://youtube.com/watch?v=amazon",
+      credentialTutorialShopeeTitle: "<script>alert(1)</script>",
+      credentialTutorialShopeeVideoUrl: "javascript:alert(1)",
       privateApiKey: "must-not-leak",
     });
 
@@ -109,6 +194,10 @@ describe("SettingsService", () => {
       supportEmail: "suporte@peppabot.com",
       supportWhatsappUrl: "https://api.whatsapp.com/send?phone=5538999999999",
       freePlanSignature: DEFAULT_FREE_PLAN_SIGNATURE,
+      ...EMPTY_TUTORIAL_SETTINGS,
+      credentialTutorialAmazonTitle: "Tutorial Amazon",
+      credentialTutorialAmazonBody: "Passo 1\nPasso 2",
+      credentialTutorialAmazonVideoUrl: "https://youtube.com/watch?v=amazon",
     });
   });
 
@@ -154,8 +243,77 @@ describe("SettingsService", () => {
         supportEmail: "",
         supportWhatsappUrl: "",
         freePlanSignature: DEFAULT_FREE_PLAN_SIGNATURE,
+        ...EMPTY_TUTORIAL_SETTINGS,
       },
     );
+  });
+
+  it("accepts and trims tutorial title, body and HTTP(S) video URL", async () => {
+    const { service } = makeService();
+
+    const result = await service.updateSettings({
+      credentialTutorialShopeeTitle: " Como obter suas credenciais Shopee ",
+      credentialTutorialShopeeBody: " 1. Login\n2. Copie a credencial ",
+      credentialTutorialShopeeVideoUrl: " https://youtube.com/watch?v=shopee ",
+    });
+
+    assert.equal(
+      result.credentialTutorialShopeeTitle,
+      "Como obter suas credenciais Shopee",
+    );
+    assert.equal(
+      result.credentialTutorialShopeeBody,
+      "1. Login\n2. Copie a credencial",
+    );
+    assert.equal(
+      result.credentialTutorialShopeeVideoUrl,
+      "https://youtube.com/watch?v=shopee",
+    );
+  });
+
+  it("rejects invalid video URLs for every marketplace", async () => {
+    for (const [, , key] of TUTORIAL_MARKETPLACE_KEYS) {
+      for (const value of [
+        "javascript:alert(1)",
+        "data:text/html,test",
+        "file:///tmp/tutorial.pdf",
+        "vbscript:msgbox(1)",
+        "texto livre",
+        `https://example.com/${"a".repeat(481)}`,
+      ]) {
+        const { service } = makeService();
+        await assert.rejects(
+          () => service.updateSettings({ [key]: value }),
+          BadRequestException,
+        );
+      }
+    }
+  });
+
+  it("rejects tutorial bodies longer than 3000 characters", async () => {
+    const { service } = makeService();
+
+    await assert.rejects(
+      () =>
+        service.updateSettings({
+          credentialTutorialAmazonBody: "a".repeat(3001),
+        }),
+      BadRequestException,
+    );
+  });
+
+  it("rejects HTML in tutorial title and body", async () => {
+    const { service } = makeService();
+
+    for (const input of [
+      { credentialTutorialAmazonTitle: "<strong>Tutorial</strong>" },
+      { credentialTutorialAmazonBody: "<script>alert(1)</script>" },
+    ]) {
+      await assert.rejects(
+        () => service.updateSettings(input),
+        BadRequestException,
+      );
+    }
   });
 
   it("updates and trims the FREE plan signature", async () => {

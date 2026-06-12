@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
-  Activity,
   Gauge,
   Gift,
   KeyRound,
@@ -27,7 +26,6 @@ const navItems = [
   { href: "/dashboard/groups", label: "Grupos", icon: Users },
   { href: "/dashboard/routes", label: "Rotas", icon: Route },
   { href: "/dashboard/credentials", label: "Credenciais", icon: KeyRound },
-  { href: "/dashboard/activity", label: "Atividade", icon: Activity },
   { href: "/dashboard/billing", label: "Plano", icon: CreditCard },
   { href: "/dashboard/referrals", label: "Indique e Ganhe", icon: Gift },
 ];

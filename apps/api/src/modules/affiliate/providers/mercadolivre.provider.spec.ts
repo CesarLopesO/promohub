@@ -18,6 +18,7 @@ function makeCredential(metadata: object | null): AffiliateCredential {
     marketplace: "mercado_livre",
     affiliateId: "loce6396673",
     trackingId: null,
+    storeSlug: null,
     apiKey: null,
     apiSecret: null,
     metadata,

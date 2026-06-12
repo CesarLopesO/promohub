@@ -96,6 +96,7 @@ function makeService(options?: {
     changed: boolean;
     canForward?: boolean;
     reason?: string;
+    warning?: string;
   }>;
   sessionStatus?: string;
   sendMessageError?: Error;
@@ -343,8 +344,7 @@ function makeService(options?: {
           : options.dailyForwardLimit;
       const sentDuringTest = forwarded.filter(
         (message) =>
-          message.status === "SENT" ||
-          message.status === "SENT_TEXT_FALLBACK",
+          message.status === "SENT" || message.status === "SENT_TEXT_FALLBACK",
       ).length;
 
       return limit === null
@@ -632,6 +632,42 @@ describe("MessageRoutesService", () => {
     assert.equal(preview.canForward, true);
   });
 
+  it("shows a clear preview warning when the Magalu tag is missing", async () => {
+    const warning =
+      "Configure sua tag Magazine Luiza para converter links Magalu.";
+    const originalUrl = "https://www.magazineluiza.com.br/produto-x/p/abc123";
+    const { service } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: `Promo ${originalUrl}`,
+        },
+      ],
+      rewriteResults: [
+        {
+          originalUrl,
+          rewrittenUrl: originalUrl,
+          marketplace: Marketplace.MAGAZINE_LUIZA,
+          changed: false,
+          canForward: false,
+          reason: "MAGALU_CREDENTIAL_MISSING",
+          warning,
+        },
+      ],
+    });
+
+    const preview = await service.preview({
+      messageId: "message-id",
+      userId: "test-user",
+    });
+
+    assert.equal(preview.canForward, false);
+    assert.deepEqual(preview.warnings, [warning]);
+  });
+
   it("previews with multiple active routes", async () => {
     const { service } = makeService({
       routes: [
@@ -888,28 +924,24 @@ describe("MessageRoutesService", () => {
   });
 
   it("FREE with 100 forwards blocks before affiliate and media processing", async () => {
-    const {
-      forwardingService,
-      forwarded,
-      sentMessages,
-      getRewriteCallCount,
-    } = makeService({
-      userPlan: Plan.FREE,
-      forwardsToday: 100,
-      routes: [makeRoute()],
-      messages: [
-        {
-          id: "message-id",
-          sessionId: "wa_xxx",
-          groupJid: "source@g.us",
-          text: "Oferta https://amzn.to/abc",
-          links: ["https://amzn.to/abc"],
-          messageType: "image",
-          hasMedia: true,
-          rawMessage: { message: { imageMessage: {} } },
-        },
-      ],
-    });
+    const { forwardingService, forwarded, sentMessages, getRewriteCallCount } =
+      makeService({
+        userPlan: Plan.FREE,
+        forwardsToday: 100,
+        routes: [makeRoute()],
+        messages: [
+          {
+            id: "message-id",
+            sessionId: "wa_xxx",
+            groupJid: "source@g.us",
+            text: "Oferta https://amzn.to/abc",
+            links: ["https://amzn.to/abc"],
+            messageType: "image",
+            hasMedia: true,
+            rawMessage: { message: { imageMessage: {} } },
+          },
+        ],
+      });
 
     const { logs, result } = await captureLogs(() =>
       forwardingService.forwardMessageById("test-user", "message-id"),
@@ -925,9 +957,7 @@ describe("MessageRoutesService", () => {
     );
     assert.ok(
       logs.some((log) =>
-        log.includes(
-          `reason=${ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED}`,
-        ),
+        log.includes(`reason=${ForwardSkipReason.DAILY_MESSAGE_LIMIT_REACHED}`),
       ),
     );
   });
@@ -1488,6 +1518,41 @@ describe("MessageRoutesService", () => {
     assert.equal(
       forwarded[0]?.reason,
       ForwardSkipReason.AFFILIATE_CREDENTIAL_MISSING,
+    );
+  });
+
+  it("uses MAGALU_CREDENTIAL_MISSING when the Magalu tag is absent", async () => {
+    const originalUrl = "https://www.magazineluiza.com.br/produto-x/p/abc123";
+    const { forwardingService, forwarded } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: originalUrl,
+          links: [originalUrl],
+        },
+      ],
+      rewriteResults: [
+        {
+          originalUrl,
+          rewrittenUrl: originalUrl,
+          marketplace: Marketplace.MAGAZINE_LUIZA,
+          changed: false,
+          canForward: false,
+          reason: "MAGALU_CREDENTIAL_MISSING",
+        },
+      ],
+    });
+
+    await forwardingService.forwardMessageById("test-user", "message-id", {
+      mode: "auto",
+    });
+
+    assert.equal(
+      forwarded[0]?.reason,
+      ForwardSkipReason.MAGALU_CREDENTIAL_MISSING,
     );
   });
 

@@ -25,7 +25,7 @@ const adminNavItems = [
   { href: "/admin/sessions", label: "Sessões", icon: Smartphone },
   { href: "/admin/forwards", label: "Forwards", icon: Send },
   { href: "/admin/errors", label: "Erros", icon: MessageSquareWarning },
-  { href: "/admin/settings", label: "Suporte", icon: LifeBuoy },
+  { href: "/admin/settings", label: "Configurações", icon: LifeBuoy },
   { href: "/admin/referrals", label: "Indicações", icon: Gift },
 ];
 

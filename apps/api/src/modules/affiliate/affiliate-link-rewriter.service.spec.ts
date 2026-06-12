@@ -28,6 +28,7 @@ function makeCredential(
     apiKey: null,
     apiSecret: null,
     trackingId: null,
+    storeSlug: null,
     metadata: null,
     isActive: true,
     createdAt: new Date("2026-06-01T12:00:00.000Z"),
@@ -263,6 +264,69 @@ describe("AffiliateLinkRewriterService", () => {
       result.rewrittenUrl,
       "https://shope.ee/abc?affiliate=shopee-aff",
     );
+  });
+
+  it("rewrites Magazine Luiza links with storeSlug", async () => {
+    const service = makeService([
+      makeCredential(Marketplace.MAGAZINE_LUIZA, {
+        storeSlug: "magazineproafiliados",
+      }),
+    ]);
+
+    const result = await service.rewriteUrlForUser(
+      "test-user",
+      "https://www.magazineluiza.com.br/produto-x/p/abc123?utm=grupo#oferta",
+    );
+
+    assert.equal(
+      result.rewrittenUrl,
+      "https://www.magazinevoce.com.br/magazineproafiliados/produto-x/p/abc123?utm=grupo#oferta",
+    );
+    assert.equal(result.canForward, true);
+  });
+
+  it("returns MAGALU_CREDENTIAL_MISSING without a Magalu credential", async () => {
+    const service = makeService([]);
+    const result = await service.rewriteUrlForUser(
+      "test-user",
+      "https://www.magazineluiza.com.br/produto-x/p/abc123",
+    );
+
+    assert.equal(result.reason, "MAGALU_CREDENTIAL_MISSING");
+    assert.equal(result.canForward, false);
+    assert.equal(
+      result.warning,
+      "Configure sua tag Magazine Luiza para converter links Magalu.",
+    );
+  });
+
+  it("previews a message with a converted Magalu link", async () => {
+    const originalUrl =
+      "https://www.magazineluiza.com.br/produto-x/p/abc123?utm=grupo";
+    const service = makeService(
+      [
+        makeCredential(Marketplace.MAGAZINE_LUIZA, {
+          storeSlug: "magazineproafiliados",
+        }),
+      ],
+      [
+        makeMessage({
+          text: `Oferta Magalu: ${originalUrl}`,
+          links: [originalUrl],
+        }),
+      ],
+    );
+
+    const result = await service.rewriteMessageForUser(
+      "test-user",
+      "message-id",
+    );
+
+    assert.equal(
+      result.rewrittenText,
+      "Oferta Magalu: https://www.magazinevoce.com.br/magazineproafiliados/produto-x/p/abc123?utm=grupo",
+    );
+    assert.equal(result.canForward, true);
   });
 
   it("preserves existing query params", async () => {

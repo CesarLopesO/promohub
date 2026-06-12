@@ -12,6 +12,7 @@ type StoredCredential = {
   apiKey: string | null;
   apiSecret: string | null;
   trackingId: string | null;
+  storeSlug: string | null;
   metadata: unknown;
   isActive: boolean;
   createdAt: Date;
@@ -115,10 +116,7 @@ describe("AffiliateCredentialsService", () => {
     assert.equal("metadata" in created, false);
     assert.match(store.get("test-user:amazon")?.apiKey ?? "", /^enc:v1:/);
     assert.match(store.get("test-user:amazon")?.apiSecret ?? "", /^enc:v1:/);
-    assert.match(
-      encryptedSsid,
-      /^enc:v1:/,
-    );
+    assert.match(encryptedSsid, /^enc:v1:/);
     assert.equal(listed.length, 1);
     assert.equal(updated.affiliateId, "affiliate-1");
     assert.match(stored.apiKey ?? "", /^enc:v1:/);
@@ -129,5 +127,115 @@ describe("AffiliateCredentialsService", () => {
     );
     assert.equal(deleted.isActive, false);
     assert.deepEqual(listedAfterDelete, []);
+  });
+
+  it("normalizes and exposes a Magazine Luiza store slug", async () => {
+    const store = new Map<string, StoredCredential>();
+    const prisma = {
+      affiliateCredential: {
+        upsert: async ({
+          create,
+        }: {
+          create: Omit<StoredCredential, "id" | "createdAt" | "updatedAt">;
+        }) => {
+          const credential = {
+            id: "magalu-credential",
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            ...create,
+          };
+          store.set(`${create.userId}:${create.marketplace}`, credential);
+          return credential;
+        },
+        findMany: async ({ where }: { where: { userId?: string } }) =>
+          Array.from(store.values()).filter(
+            (credential) =>
+              credential.isActive &&
+              (!where.userId || credential.userId === where.userId),
+          ),
+      },
+    };
+    const service = new AffiliateCredentialsService(prisma as never);
+
+    const result = await service.create({
+      userId: "test-user",
+      marketplace: Marketplace.MAGAZINE_LUIZA,
+      storeSlug: " MagazineProAfiliados ",
+    });
+
+    assert.equal(result.storeSlug, "magazineproafiliados");
+    assert.equal(
+      store.get("test-user:magazine_luiza")?.storeSlug,
+      "magazineproafiliados",
+    );
+    assert.deepEqual(await service.list("test-user"), [result]);
+  });
+
+  it("rejects invalid Magazine Luiza store slugs", async () => {
+    const service = new AffiliateCredentialsService({} as never);
+
+    for (const storeSlug of [
+      "",
+      "ab",
+      "loja com espaco",
+      "https://www.magazinevoce.com.br/minhaloja",
+      "javascript:alert(1)",
+      "data:text/html,test",
+      "file:///tmp/test",
+      "a".repeat(81),
+    ]) {
+      await assert.rejects(
+        () =>
+          service.create({
+            userId: "test-user",
+            marketplace: Marketplace.MAGAZINE_LUIZA,
+            storeSlug,
+          }),
+        /storeSlug/,
+      );
+    }
+  });
+
+  it("continues saving Amazon, Mercado Livre, and Shopee credentials", async () => {
+    const store = new Map<string, StoredCredential>();
+    const prisma = {
+      affiliateCredential: {
+        upsert: async ({
+          create,
+        }: {
+          create: Omit<StoredCredential, "id" | "createdAt" | "updatedAt">;
+        }) => {
+          const credential = {
+            id: `${create.marketplace}-credential`,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            ...create,
+          };
+          store.set(`${create.userId}:${create.marketplace}`, credential);
+          return credential;
+        },
+      },
+    };
+    const service = new AffiliateCredentialsService(prisma as never);
+
+    const amazon = await service.create({
+      userId: "test-user",
+      marketplace: Marketplace.AMAZON,
+      trackingId: "meutag-20",
+    });
+    const mercadoLivre = await service.create({
+      userId: "test-user",
+      marketplace: Marketplace.MERCADO_LIVRE,
+      affiliateId: "loce6396673",
+    });
+    const shopee = await service.create({
+      userId: "test-user",
+      marketplace: Marketplace.SHOPEE,
+      affiliateId: "shopee-tag",
+    });
+
+    assert.equal(amazon.trackingId, "meutag-20");
+    assert.equal(mercadoLivre.affiliateId, "loce6396673");
+    assert.equal(shopee.affiliateId, "shopee-tag");
   });
 });

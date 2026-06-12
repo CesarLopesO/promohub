@@ -1,13 +1,53 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 
 import { PrismaService } from "../../prisma.service";
-import type { PublicSettings, UpdateSettingsInput } from "./settings.types";
+import type {
+  CredentialTutorialSettings,
+  PublicSettings,
+  UpdateSettingsInput,
+} from "./settings.types";
 import { DEFAULT_FREE_PLAN_SIGNATURE } from "./settings.types";
+
+const TUTORIAL_SETTING_FIELDS = [
+  ["credentialTutorialAmazonTitle", "title"],
+  ["credentialTutorialAmazonBody", "body"],
+  ["credentialTutorialAmazonVideoUrl", "videoUrl"],
+  ["credentialTutorialMercadoLivreTitle", "title"],
+  ["credentialTutorialMercadoLivreBody", "body"],
+  ["credentialTutorialMercadoLivreVideoUrl", "videoUrl"],
+  ["credentialTutorialShopeeTitle", "title"],
+  ["credentialTutorialShopeeBody", "body"],
+  ["credentialTutorialShopeeVideoUrl", "videoUrl"],
+  ["credentialTutorialAliExpressTitle", "title"],
+  ["credentialTutorialAliExpressBody", "body"],
+  ["credentialTutorialAliExpressVideoUrl", "videoUrl"],
+  ["credentialTutorialMagazineLuizaTitle", "title"],
+  ["credentialTutorialMagazineLuizaBody", "body"],
+  ["credentialTutorialMagazineLuizaVideoUrl", "videoUrl"],
+  ["credentialTutorialCasasBahiaTitle", "title"],
+  ["credentialTutorialCasasBahiaBody", "body"],
+  ["credentialTutorialCasasBahiaVideoUrl", "videoUrl"],
+  ["credentialTutorialPontoTitle", "title"],
+  ["credentialTutorialPontoBody", "body"],
+  ["credentialTutorialPontoVideoUrl", "videoUrl"],
+  ["credentialTutorialExtraTitle", "title"],
+  ["credentialTutorialExtraBody", "body"],
+  ["credentialTutorialExtraVideoUrl", "videoUrl"],
+  ["credentialTutorialKabumTitle", "title"],
+  ["credentialTutorialKabumBody", "body"],
+  ["credentialTutorialKabumVideoUrl", "videoUrl"],
+  ["credentialTutorialNetshoesTitle", "title"],
+  ["credentialTutorialNetshoesBody", "body"],
+  ["credentialTutorialNetshoesVideoUrl", "videoUrl"],
+] as const satisfies ReadonlyArray<
+  readonly [keyof CredentialTutorialSettings, "title" | "body" | "videoUrl"]
+>;
 
 const PUBLIC_SETTING_KEYS = [
   "supportEmail",
   "supportWhatsappUrl",
   "freePlanSignature",
+  ...TUTORIAL_SETTING_FIELDS.map(([key]) => key),
 ] as const satisfies ReadonlyArray<keyof PublicSettings>;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -33,13 +73,19 @@ export class SettingsService {
       },
     });
     const values = new Map(rows.map((row) => [row.key, row.value]));
+    const credentialTutorialSettings = Object.fromEntries(
+      TUTORIAL_SETTING_FIELDS.map(([key, kind]) => [
+        key,
+        this.readStoredTutorialValue(values.get(key), key, kind),
+      ]),
+    ) as CredentialTutorialSettings;
 
     return {
       supportEmail: values.get("supportEmail") ?? "",
       supportWhatsappUrl: values.get("supportWhatsappUrl") ?? "",
       freePlanSignature:
-        values.get("freePlanSignature")?.trim() ||
-        DEFAULT_FREE_PLAN_SIGNATURE,
+        values.get("freePlanSignature")?.trim() || DEFAULT_FREE_PLAN_SIGNATURE,
+      ...credentialTutorialSettings,
     };
   }
 
@@ -69,6 +115,15 @@ export class SettingsService {
         key: "freePlanSignature",
         value: this.normalizeFreePlanSignature(input.freePlanSignature),
       });
+    }
+
+    for (const [key, kind] of TUTORIAL_SETTING_FIELDS) {
+      if (input[key] !== undefined) {
+        updates.push({
+          key,
+          value: this.normalizeTutorialValue(input[key], key, kind),
+        });
+      }
     }
 
     if (updates.length > 0) {
@@ -167,5 +222,67 @@ export class SettingsService {
     }
 
     return signature;
+  }
+
+  private normalizeTutorialValue(
+    value: unknown,
+    key: keyof CredentialTutorialSettings,
+    kind: "title" | "body" | "videoUrl",
+  ): string {
+    if (typeof value !== "string") {
+      throw new BadRequestException(`${key} must be a string.`);
+    }
+
+    const normalized = value.trim();
+
+    if (!normalized) {
+      return "";
+    }
+
+    const maxLength = kind === "title" ? 120 : kind === "body" ? 3000 : 500;
+
+    if (normalized.length > maxLength) {
+      throw new BadRequestException(
+        `${key} must have at most ${maxLength} characters.`,
+      );
+    }
+
+    if (kind !== "videoUrl") {
+      if (/<[^>]+>/.test(normalized)) {
+        throw new BadRequestException(`${key} must not contain HTML.`);
+      }
+
+      return normalized;
+    }
+
+    let parsedUrl: URL;
+
+    try {
+      parsedUrl = new URL(normalized);
+    } catch {
+      throw new BadRequestException(`${key} must be a valid HTTP(S) URL.`);
+    }
+
+    if (
+      !["http:", "https:"].includes(parsedUrl.protocol) ||
+      parsedUrl.username ||
+      parsedUrl.password
+    ) {
+      throw new BadRequestException(`${key} must be a valid HTTP(S) URL.`);
+    }
+
+    return normalized;
+  }
+
+  private readStoredTutorialValue(
+    value: string | undefined,
+    key: keyof CredentialTutorialSettings,
+    kind: "title" | "body" | "videoUrl",
+  ): string {
+    try {
+      return this.normalizeTutorialValue(value ?? "", key, kind);
+    } catch {
+      return "";
+    }
   }
 }

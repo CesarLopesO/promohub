@@ -265,6 +265,7 @@ model AffiliateCredential {
   apiKey      String?
   apiSecret   String?
   trackingId  String?
+  storeSlug   String?
   metadata    Json?
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())

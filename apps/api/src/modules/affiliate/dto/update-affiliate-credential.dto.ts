@@ -4,6 +4,7 @@ export class UpdateAffiliateCredentialDto {
   apiKey?: string | null;
   apiSecret?: string | null;
   trackingId?: string | null;
+  storeSlug?: string | null;
   metadata?: unknown;
   isActive?: boolean;
 }

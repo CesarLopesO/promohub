@@ -128,13 +128,29 @@ export class AffiliateLinkRewriterService {
     });
 
     if (!credential?.isActive) {
+      const missingReason =
+        marketplace === Marketplace.AMAZON
+          ? "AMAZON_TAG_NOT_CONFIGURED"
+          : marketplace === Marketplace.MAGAZINE_LUIZA
+            ? "MAGALU_CREDENTIAL_MISSING"
+            : "MISSING_CREDENTIAL";
+
       return this.unchanged(
         normalizedUrl,
         marketplace,
-        marketplace === Marketplace.AMAZON
-          ? "AMAZON_TAG_NOT_CONFIGURED"
-          : "MISSING_CREDENTIAL",
-        marketplace === Marketplace.AMAZON ? { canForward: false } : undefined,
+        missingReason,
+        marketplace === Marketplace.AMAZON ||
+          marketplace === Marketplace.MAGAZINE_LUIZA
+          ? {
+              canForward: false,
+              ...(marketplace === Marketplace.MAGAZINE_LUIZA
+                ? {
+                    warning:
+                      "Configure sua tag Magazine Luiza para converter links Magalu.",
+                  }
+                : {}),
+            }
+          : undefined,
       );
     }
     const decryptedCredential = decryptAffiliateCredential(credential);
@@ -561,6 +577,11 @@ export class AffiliateLinkRewriterService {
         rewrite.marketplace === Marketplace.AMAZON &&
         rewrite.canForward !== true,
     );
+    const failedMagaluRewrites = rewrites.filter(
+      (rewrite) =>
+        rewrite.marketplace === Marketplace.MAGAZINE_LUIZA &&
+        rewrite.canForward !== true,
+    );
     const mercadoLivreFailureReason =
       failedMercadoLivreRewrites.find(
         (rewrite) => rewrite.reason === "MERCADO_LIVRE_PRODUCT_NOT_FOUND",
@@ -575,6 +596,7 @@ export class AffiliateLinkRewriterService {
 
     const canForward =
       failedAmazonRewrites.length === 0 &&
+      failedMagaluRewrites.length === 0 &&
       (mercadoLivreRewrites.length > 0
         ? failedMercadoLivreRewrites.length === 0
         : rewrites.some(
@@ -590,9 +612,11 @@ export class AffiliateLinkRewriterService {
       rewrites,
       ...(failedAmazonRewrites.length > 0
         ? { reason: failedAmazonRewrites[0]?.reason }
-        : failedMercadoLivreRewrites.length > 0
-          ? { reason: mercadoLivreFailureReason }
-          : {}),
+        : failedMagaluRewrites.length > 0
+          ? { reason: failedMagaluRewrites[0]?.reason }
+          : failedMercadoLivreRewrites.length > 0
+            ? { reason: mercadoLivreFailureReason }
+            : {}),
     };
   }
 

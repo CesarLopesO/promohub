@@ -11,14 +11,24 @@ import {
 } from "lucide-react";
 
 import { Button } from "@promohub/ui/button";
+import {
+  CREDENTIAL_TUTORIAL_MARKETPLACES,
+  CredentialTutorialContent,
+  EMPTY_CREDENTIAL_TUTORIAL_SETTINGS,
+  pickCredentialTutorialSettings,
+  type CredentialTutorialSettings,
+} from "@/src/components/credential-tutorial-link";
 import { ErrorBox, LoadingBlock, PageHeader } from "@/src/components/ui-state";
+import { UpcomingMarketplaceCard } from "@/src/components/upcoming-marketplace-card";
 import { apiFetch } from "@/src/lib/api";
+import { normalizeMagazineLuizaStoreSlug } from "@/src/lib/magazine-luiza-store-slug";
 
 type Credential = {
   id: string;
   marketplace: "amazon" | "mercado_livre" | string;
   affiliateId?: string;
   trackingId?: string;
+  storeSlug?: string;
   hasApiKey?: boolean;
   hasApiSecret?: boolean;
   hasSessionToken?: boolean;
@@ -111,22 +121,21 @@ type MercadoLivreRawResult = {
   body: unknown;
 };
 
-const UPCOMING_MARKETPLACES = [
-  "Shopee",
-  "AliExpress",
-  "Magazine Luiza",
-  "Casas Bahia",
-  "Ponto",
-  "Extra",
-  "Kabum",
-  "Netshoes",
-] as const;
+const UPCOMING_MARKETPLACES = CREDENTIAL_TUTORIAL_MARKETPLACES.filter(
+  ({ marketplace }) =>
+    marketplace !== "amazon" &&
+    marketplace !== "mercado_livre" &&
+    marketplace !== "magazine_luiza",
+);
 
 export default function CredentialsPage() {
   const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [tutorialSettings, setTutorialSettings] =
+    useState<CredentialTutorialSettings>(EMPTY_CREDENTIAL_TUTORIAL_SETTINGS);
   const [amazonTrackingId, setAmazonTrackingId] = useState("");
   const [mlSessionToken, setMlSessionToken] = useState("");
   const [mlAffiliateId, setMlAffiliateId] = useState("");
+  const [magazineLuizaStoreSlug, setMagazineLuizaStoreSlug] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [mlTestUrl, setMlTestUrl] = useState("");
@@ -161,6 +170,13 @@ export default function CredentialsPage() {
       ),
     [credentials],
   );
+  const magazineLuizaCredential = useMemo(
+    () =>
+      credentials.find(
+        (credential) => credential.marketplace === "magazine_luiza",
+      ),
+    [credentials],
+  );
   const mlHasToken = Boolean(mlCredential?.hasSessionToken);
 
   async function loadCredentials() {
@@ -178,6 +194,10 @@ export default function CredentialsPage() {
     setAmazonTrackingId(amazon?.trackingId ?? "");
     setMlAffiliateId(mercadoLivre?.affiliateId ?? "");
     setMlSessionToken("");
+    setMagazineLuizaStoreSlug(
+      result.find((credential) => credential.marketplace === "magazine_luiza")
+        ?.storeSlug ?? "",
+    );
   }
 
   useEffect(() => {
@@ -185,10 +205,16 @@ export default function CredentialsPage() {
 
     async function load() {
       try {
-        const result = await apiFetch<Credential[]>("/affiliate/credentials");
+        const [result, settings] = await Promise.all([
+          apiFetch<Credential[]>("/affiliate/credentials"),
+          apiFetch<CredentialTutorialSettings>("/settings/public", {
+            auth: false,
+          }).catch(() => EMPTY_CREDENTIAL_TUTORIAL_SETTINGS),
+        ]);
 
         if (!cancelled) {
           setCredentials(result);
+          setTutorialSettings(pickCredentialTutorialSettings(settings));
           setAmazonTrackingId(
             result.find((credential) => credential.marketplace === "amazon")
               ?.trackingId ?? "",
@@ -197,6 +223,11 @@ export default function CredentialsPage() {
             result.find(
               (credential) => credential.marketplace === "mercado_livre",
             )?.affiliateId ?? "",
+          );
+          setMagazineLuizaStoreSlug(
+            result.find(
+              (credential) => credential.marketplace === "magazine_luiza",
+            )?.storeSlug ?? "",
           );
         }
       } catch (err) {
@@ -288,6 +319,38 @@ export default function CredentialsPage() {
         err instanceof Error
           ? err.message
           : "Erro ao salvar credencial Mercado Livre.",
+      );
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function saveMagazineLuiza(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const storeSlug = normalizeMagazineLuizaStoreSlug(magazineLuizaStoreSlug);
+
+    if (!storeSlug) {
+      setError(
+        "Informe apenas o nome da loja Magazine Você, com 3 a 80 letras, números, hífens ou underscores.",
+      );
+      return;
+    }
+
+    setSaving("magazine_luiza");
+    setError(null);
+
+    try {
+      await saveCredential(magazineLuizaCredential?.id, {
+        marketplace: "magazine_luiza",
+        storeSlug,
+      });
+      await loadCredentials();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Erro ao salvar credencial Magazine Luiza.",
       );
     } finally {
       setSaving(null);
@@ -418,14 +481,17 @@ export default function CredentialsPage() {
                 </span>
               </label>
 
-              <Button
-                className="mt-5"
-                disabled={saving === "amazon"}
-                type="submit"
-              >
-                <Save className="h-4 w-4" aria-hidden="true" />
-                {saving === "amazon" ? "Salvando..." : "Salvar Amazon"}
-              </Button>
+              <CredentialTutorialContent
+                marketplace="amazon"
+                settings={tutorialSettings}
+              />
+
+              <div className="mt-5">
+                <Button disabled={saving === "amazon"} type="submit">
+                  <Save className="h-4 w-4" aria-hidden="true" />
+                  {saving === "amazon" ? "Salvando..." : "Salvar Amazon"}
+                </Button>
+              </div>
 
               <div className="mt-6 border-t border-slate-200 pt-5">
                 <h3 className="text-sm font-semibold text-slate-950">
@@ -489,16 +555,19 @@ export default function CredentialsPage() {
                 </span>
               </label>
 
-              <Button
-                className="mt-5"
-                disabled={saving === "mercado_livre"}
-                type="submit"
-              >
-                <Save className="h-4 w-4" aria-hidden="true" />
-                {saving === "mercado_livre"
-                  ? "Salvando..."
-                  : "Salvar Mercado Livre"}
-              </Button>
+              <CredentialTutorialContent
+                marketplace="mercado_livre"
+                settings={tutorialSettings}
+              />
+
+              <div className="mt-5">
+                <Button disabled={saving === "mercado_livre"} type="submit">
+                  <Save className="h-4 w-4" aria-hidden="true" />
+                  {saving === "mercado_livre"
+                    ? "Salvando..."
+                    : "Salvar Mercado Livre"}
+                </Button>
+              </div>
 
               <div className="mt-6 border-t border-slate-200 pt-5">
                 <h3 className="text-sm font-semibold text-slate-950">
@@ -594,6 +663,75 @@ export default function CredentialsPage() {
                 </dl>
               </div>
             </form>
+
+            <form
+              className="rounded-lg border border-slate-200 bg-white p-5"
+              onSubmit={saveMagazineLuiza}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-950">
+                    Magazine Luiza
+                  </h2>
+                </div>
+              </div>
+
+              <label className="mt-5 block text-sm font-medium text-slate-700">
+                Tag / Nome da loja
+                <input
+                  className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
+                  maxLength={80}
+                  minLength={3}
+                  onChange={(event) =>
+                    setMagazineLuizaStoreSlug(event.target.value)
+                  }
+                  pattern="[A-Za-z0-9_-]{3,80}"
+                  placeholder="magazineproafiliados"
+                  required
+                  type="text"
+                  value={magazineLuizaStoreSlug}
+                />
+                <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  Informe o nome da sua loja Magazine Você. Exemplo: se sua loja
+                  é https://www.magazinevoce.com.br/magazineproafiliados, digite
+                  apenas: magazineproafiliados
+                </span>
+              </label>
+
+              <CredentialTutorialContent
+                marketplace="magazine_luiza"
+                settings={tutorialSettings}
+              />
+
+              <div className="mt-5">
+                <Button disabled={saving === "magazine_luiza"} type="submit">
+                  <Save className="h-4 w-4" aria-hidden="true" />
+                  {saving === "magazine_luiza"
+                    ? "Salvando..."
+                    : "Salvar Magazine Luiza"}
+                </Button>
+              </div>
+
+              <div className="mt-6 border-t border-slate-200 pt-5">
+                <h3 className="text-sm font-semibold text-slate-950">
+                  Configuração atual
+                </h3>
+                <dl className="mt-3 grid gap-2 text-sm">
+                  <Row
+                    label="Status"
+                    value={
+                      magazineLuizaCredential?.isActive ? "Ativa" : "Inativa"
+                    }
+                  />
+                  <Row
+                    label="Nome da loja"
+                    value={
+                      magazineLuizaCredential?.storeSlug || "Não informado"
+                    }
+                  />
+                </dl>
+              </div>
+            </form>
           </section>
 
           <section className="mt-6">
@@ -606,10 +744,12 @@ export default function CredentialsPage() {
               </p>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {UPCOMING_MARKETPLACES.map((marketplace) => (
+              {UPCOMING_MARKETPLACES.map(({ marketplace, label }) => (
                 <UpcomingMarketplaceCard
                   key={marketplace}
+                  label={label}
                   marketplace={marketplace}
+                  tutorialSettings={tutorialSettings}
                 />
               ))}
             </div>
@@ -632,15 +772,17 @@ function MarketplaceOverview() {
             Suportados
           </p>
           <ul className="mt-2 space-y-2 text-sm text-slate-700">
-            {["Amazon", "Mercado Livre"].map((marketplace) => (
-              <li className="flex items-center gap-2" key={marketplace}>
-                <CheckCircle2
-                  aria-hidden="true"
-                  className="h-4 w-4 text-emerald-600"
-                />
-                {marketplace}
-              </li>
-            ))}
+            {["Amazon", "Mercado Livre", "Magazine Luiza"].map(
+              (marketplace) => (
+                <li className="flex items-center gap-2" key={marketplace}>
+                  <CheckCircle2
+                    aria-hidden="true"
+                    className="h-4 w-4 text-emerald-600"
+                  />
+                  {marketplace}
+                </li>
+              ),
+            )}
           </ul>
         </div>
         <div>
@@ -648,41 +790,16 @@ function MarketplaceOverview() {
             Em desenvolvimento
           </p>
           <ul className="mt-2 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
-            {UPCOMING_MARKETPLACES.map((marketplace) => (
+            {UPCOMING_MARKETPLACES.map(({ marketplace, label }) => (
               <li className="flex items-center gap-2" key={marketplace}>
                 <Clock3 aria-hidden="true" className="h-4 w-4 text-amber-600" />
-                {marketplace}
+                {label}
               </li>
             ))}
           </ul>
         </div>
       </div>
     </section>
-  );
-}
-
-function UpcomingMarketplaceCard({ marketplace }: { marketplace: string }) {
-  return (
-    <article className="rounded-lg border border-slate-200 bg-slate-50 p-5">
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="text-base font-semibold text-slate-700">
-          {marketplace}
-        </h3>
-        <span className="inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
-          Em breve
-        </span>
-      </div>
-      <label className="mt-5 block text-sm font-medium text-slate-500">
-        Credencial de afiliado
-        <input
-          className="mt-1 h-10 w-full cursor-not-allowed rounded-md border border-slate-200 bg-slate-100 px-3 text-sm text-slate-400"
-          disabled
-          placeholder="Em breve"
-          readOnly
-          type="text"
-        />
-      </label>
-    </article>
   );
 }
 

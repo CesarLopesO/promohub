@@ -20,6 +20,7 @@ export type AffiliateCredentialDto = {
   marketplace: Marketplace;
   affiliateId?: string;
   trackingId?: string;
+  storeSlug?: string;
   hasApiKey: boolean;
   hasApiSecret: boolean;
   hasSessionToken: boolean;
@@ -37,7 +38,7 @@ export class AffiliateCredentialsService {
   ): Promise<AffiliateCredentialDto> {
     const userId = this.normalizeRequiredString(body.userId, "userId");
     const marketplace = this.normalizeMarketplace(body.marketplace);
-    const data = this.toCredentialData(body);
+    const data = this.toCredentialData(body, marketplace);
 
     const credential = await this.prisma.affiliateCredential.upsert({
       where: {
@@ -84,10 +85,7 @@ export class AffiliateCredentialsService {
     return credentials.map((credential) => this.toDto(credential));
   }
 
-  async findOne(
-    id: string,
-    userId?: string,
-  ): Promise<AffiliateCredentialDto> {
+  async findOne(id: string, userId?: string): Promise<AffiliateCredentialDto> {
     const credential = await this.findCredential(id, userId);
 
     return this.toDto(credential);
@@ -99,16 +97,16 @@ export class AffiliateCredentialsService {
     userId?: string,
   ): Promise<AffiliateCredentialDto> {
     const credential = await this.findCredential(id, userId);
-    const data = this.toCredentialData(body);
+    const marketplace =
+      body.marketplace === undefined
+        ? credential.marketplace
+        : this.normalizeMarketplace(body.marketplace);
+    const data = this.toCredentialData(body, marketplace, credential.storeSlug);
     const migratedSecrets = encryptCredentialSecrets({
       apiKey: credential.apiKey,
       apiSecret: credential.apiSecret,
       metadata: credential.metadata as Prisma.InputJsonValue,
     });
-    const marketplace =
-      body.marketplace === undefined
-        ? credential.marketplace
-        : this.normalizeMarketplace(body.marketplace);
 
     const updated = await this.prisma.affiliateCredential.update({
       where: {
@@ -169,7 +167,20 @@ export class AffiliateCredentialsService {
 
   private toCredentialData(
     body: CreateAffiliateCredentialDto | UpdateAffiliateCredentialDto,
+    marketplace: string,
+    currentStoreSlug?: string | null,
   ) {
+    const storeSlug =
+      body.storeSlug === undefined
+        ? currentStoreSlug
+        : this.normalizeStoreSlug(body.storeSlug);
+
+    if (marketplace === Marketplace.MAGAZINE_LUIZA && !storeSlug) {
+      throw new BadRequestException(
+        "Field storeSlug is required for magazine_luiza.",
+      );
+    }
+
     const data = {
       ...(body.affiliateId === undefined
         ? {}
@@ -183,6 +194,7 @@ export class AffiliateCredentialsService {
       ...(body.trackingId === undefined
         ? {}
         : { trackingId: this.normalizeNullableString(body.trackingId) }),
+      ...(body.storeSlug === undefined ? {} : { storeSlug }),
       ...(body.metadata === undefined
         ? {}
         : { metadata: this.toJson(body.metadata) }),
@@ -202,6 +214,7 @@ export class AffiliateCredentialsService {
     apiKey: string | null;
     apiSecret: string | null;
     trackingId: string | null;
+    storeSlug: string | null;
     metadata: Prisma.JsonValue | null;
     isActive: boolean;
     createdAt: Date;
@@ -213,6 +226,7 @@ export class AffiliateCredentialsService {
       marketplace: this.normalizeMarketplace(credential.marketplace),
       affiliateId: credential.affiliateId ?? undefined,
       trackingId: credential.trackingId ?? undefined,
+      storeSlug: credential.storeSlug ?? undefined,
       hasApiKey: Boolean(credential.apiKey),
       hasApiSecret: Boolean(credential.apiSecret),
       hasSessionToken: hasSessionToken(credential.metadata),
@@ -244,6 +258,34 @@ export class AffiliateCredentialsService {
     }
 
     return value.trim() || null;
+  }
+
+  private normalizeStoreSlug(value: string | null): string | null {
+    if (value === null) {
+      return null;
+    }
+
+    if (typeof value !== "string") {
+      throw new BadRequestException("Field storeSlug must be a string.");
+    }
+
+    const storeSlug = value.trim().toLowerCase();
+
+    if (!storeSlug) {
+      return null;
+    }
+
+    if (
+      storeSlug.length < 3 ||
+      storeSlug.length > 80 ||
+      !/^[a-z0-9_-]+$/.test(storeSlug)
+    ) {
+      throw new BadRequestException(
+        "Field storeSlug must have 3 to 80 letters, numbers, hyphens, or underscores.",
+      );
+    }
+
+    return storeSlug;
   }
 
   private toJson(value: unknown): Prisma.InputJsonValue {

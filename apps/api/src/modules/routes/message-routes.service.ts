@@ -394,6 +394,8 @@ export class MessageRoutesService {
       (rewrite) =>
         (rewrite.marketplace === Marketplace.MERCADO_LIVRE &&
           rewrite.canForward !== true) ||
+        (rewrite.marketplace === Marketplace.MAGAZINE_LUIZA &&
+          rewrite.canForward !== true) ||
         (rewrite.marketplace === Marketplace.AMAZON &&
           rewrite.canForward !== true &&
           (rewrite.reason === "INVALID_AMAZON_URL" ||
@@ -411,7 +413,14 @@ export class MessageRoutesService {
         !hasFailedBlockingAffiliate &&
         (rewritePreview.canForward || detectedWhatsAppLinks.length > 0),
       rewrites: [...rewritePreview.rewrites, ...whatsappRewrites],
-      warnings: firstDestinationPreview?.warnings ?? [],
+      warnings: [
+        ...new Set([
+          ...(firstDestinationPreview?.warnings ?? []),
+          ...rewritePreview.rewrites.flatMap((rewrite) =>
+            rewrite.warning ? [rewrite.warning] : [],
+          ),
+        ]),
+      ],
       destinationPreviews,
     };
   }

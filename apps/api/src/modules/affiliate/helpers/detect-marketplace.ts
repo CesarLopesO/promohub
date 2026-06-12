@@ -2,6 +2,7 @@ export enum Marketplace {
   AMAZON = "amazon",
   MERCADO_LIVRE = "mercado_livre",
   SHOPEE = "shopee",
+  MAGAZINE_LUIZA = "magazine_luiza",
   WHATSAPP = "whatsapp",
   UNKNOWN = "unknown",
 }
@@ -22,6 +23,15 @@ const MARKETPLACE_HOSTS: Array<{
     marketplace: Marketplace.SHOPEE,
     hosts: ["shopee.com.br", "shopee.com", "shope.ee"],
   },
+  {
+    marketplace: Marketplace.MAGAZINE_LUIZA,
+    hosts: [
+      "magazineluiza.com.br",
+      "magalu.com.br",
+      "magalu.com",
+      "magazinevoce.com.br",
+    ],
+  },
 ];
 
 export function detectMarketplace(url: string): Marketplace {
@@ -32,7 +42,9 @@ export function detectMarketplace(url: string): Marketplace {
   }
 
   for (const { marketplace, hosts } of MARKETPLACE_HOSTS) {
-    if (hosts.some((host) => hostname === host || hostname.endsWith(`.${host}`))) {
+    if (
+      hosts.some((host) => hostname === host || hostname.endsWith(`.${host}`))
+    ) {
       return marketplace;
     }
   }

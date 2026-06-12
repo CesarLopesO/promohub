@@ -11,7 +11,7 @@ type SupportedMessageType =
   | "unknown";
 
 const LINK_PATTERN =
-  /(?:https?:\/\/[^\s<>"']+|(?:amzn\.to\/|www\.amazon\.|amazon\.|meli\.la\/|mercadolivre\.com|mercadolivre\.|shope\.ee\/|shopee\.)[^\s<>"']*)/gi;
+  /(?:https?:\/\/[^\s<>"']+|(?:amzn\.to\/|www\.amazon\.|amazon\.|meli\.la\/|mercadolivre\.com|mercadolivre\.|shope\.ee\/|shopee\.|www\.magazineluiza\.|magazineluiza\.|www\.magalu\.|magalu\.|www\.magazinevoce\.|magazinevoce\.)[^\s<>"']*)/gi;
 
 const TRAILING_PUNCTUATION_PATTERN = /[.,)\]!]+$/;
 
@@ -98,7 +98,9 @@ export function isProtocolMessage(message: WAMessage): boolean {
   return Boolean(getNormalizedContent(message)?.protocolMessage);
 }
 
-function getNormalizedContent(message: WAMessage): WAMessageContent | undefined {
+function getNormalizedContent(
+  message: WAMessage,
+): WAMessageContent | undefined {
   return normalizeMessageContent(message.message);
 }
 

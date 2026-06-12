@@ -4,5 +4,6 @@ export class CreateAffiliateCredentialDto {
   apiKey?: string;
   apiSecret?: string;
   trackingId?: string;
+  storeSlug?: string;
   metadata?: unknown;
 }

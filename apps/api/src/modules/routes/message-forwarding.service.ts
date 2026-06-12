@@ -137,10 +137,7 @@ export class MessageForwardingService {
     }
 
     if (
-      !(await this.planLimits.canForwardMessage(
-        normalizedUserId,
-        user.plan,
-      ))
+      !(await this.planLimits.canForwardMessage(normalizedUserId, user.plan))
     ) {
       this.logSkippedForRoutes(
         message,
@@ -211,6 +208,36 @@ export class MessageForwardingService {
         failedAmazonRewrite.reason ?? "AMAZON_GENERATION_FAILED";
       const reason = this.normalizeAffiliateReason(
         Marketplace.AMAZON,
+        providerReason,
+      );
+      this.logSkippedForRoutes(message, routes, reason);
+
+      return this.persistSkippedForRoutes({
+        userId: normalizedUserId,
+        message,
+        routes,
+        mode,
+        rewrittenText:
+          rewritePreview.rewrittenText ??
+          rewritePreview.originalText ??
+          message.text ??
+          "",
+        reason,
+        errorDetail: providerReason,
+      });
+    }
+
+    const failedMagaluRewrite = rewritePreview.rewrites.find(
+      (rewrite) =>
+        rewrite.marketplace === Marketplace.MAGAZINE_LUIZA &&
+        rewrite.canForward !== true,
+    );
+
+    if (failedMagaluRewrite) {
+      const providerReason =
+        failedMagaluRewrite.reason ?? "MAGALU_REWRITE_FAILED";
+      const reason = this.normalizeAffiliateReason(
+        Marketplace.MAGAZINE_LUIZA,
         providerReason,
       );
       this.logSkippedForRoutes(message, routes, reason);
@@ -304,10 +331,7 @@ export class MessageForwardingService {
       const destinationGroupJid = route.destinationGroupJid;
 
       if (
-        !(await this.planLimits.canForwardMessage(
-          normalizedUserId,
-          user.plan,
-        ))
+        !(await this.planLimits.canForwardMessage(normalizedUserId, user.plan))
       ) {
         this.logOperational("MESSAGE_FORWARD", "skipped", {
           sessionId: message.sessionId,
@@ -843,6 +867,12 @@ export class MessageForwardingService {
     marketplace: Marketplace,
     providerReason?: string,
   ): ForwardSkipReasonValue {
+    if (marketplace === Marketplace.MAGAZINE_LUIZA) {
+      return providerReason === "MAGALU_CREDENTIAL_MISSING"
+        ? ForwardSkipReason.MAGALU_CREDENTIAL_MISSING
+        : ForwardSkipReason.MAGALU_REWRITE_FAILED;
+    }
+
     if (
       providerReason === "AMAZON_TAG_NOT_CONFIGURED" ||
       providerReason === "MISSING_MERCADO_LIVRE_SESSION" ||

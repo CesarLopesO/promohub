@@ -42,16 +42,6 @@ type MonitoringStats = {
   };
 };
 
-type RecentActivity = {
-  recentMessages: Array<{ id: string }>;
-  recentForwards: Array<{
-    id: string;
-    status: string;
-    mode?: string;
-    mediaForwarded: boolean;
-  }>;
-};
-
 type Credential = {
   id: string;
   marketplace: string;
@@ -62,7 +52,6 @@ const numberFormat = new Intl.NumberFormat("pt-BR");
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<MonitoringStats | null>(null);
-  const [activity, setActivity] = useState<RecentActivity | null>(null);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [planUsage, setPlanUsage] = useState<DailyForwardUsage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -73,17 +62,14 @@ export default function DashboardPage() {
 
     async function load() {
       try {
-        const [statsResult, activityResult, credentialResult, usageResult] =
-          await Promise.all([
-            apiFetch<MonitoringStats>("/monitoring/stats"),
-            apiFetch<RecentActivity>("/monitoring/recent-activity"),
-            apiFetch<Credential[]>("/affiliate/credentials"),
-            apiFetch<DailyForwardUsage>("/billing/usage"),
-          ]);
+        const [statsResult, credentialResult, usageResult] = await Promise.all([
+          apiFetch<MonitoringStats>("/monitoring/stats"),
+          apiFetch<Credential[]>("/affiliate/credentials"),
+          apiFetch<DailyForwardUsage>("/billing/usage"),
+        ]);
 
         if (!cancelled) {
           setStats(statsResult);
-          setActivity(activityResult);
           setCredentials(credentialResult);
           setPlanUsage(usageResult);
         }
@@ -115,10 +101,6 @@ export default function DashboardPage() {
     return <ErrorBox message={error ?? "Dashboard indisponivel."} />;
   }
 
-  const autoSent =
-    activity?.recentForwards.filter(
-      (forward) => forward.mode === "AUTO" && forward.status.includes("SENT"),
-    ).length ?? 0;
   const hasCredential = credentials.some((credential) => credential.isActive);
   const onboardingItems = [
     {
@@ -144,12 +126,6 @@ export default function DashboardPage() {
       done: stats.routes.active > 0,
       href: "/dashboard/groups",
       action: "Criar rota",
-    },
-    {
-      label: "Aguardar primeira promocao",
-      done: stats.forwards.sent > 0 || autoSent > 0,
-      href: "/dashboard/activity",
-      action: "Ver atividade",
     },
   ];
 
@@ -177,7 +153,7 @@ export default function DashboardPage() {
             {onboardingItems.length} concluido
           </p>
         </div>
-        <div className="mt-5 grid gap-3 lg:grid-cols-5">
+        <div className="mt-5 grid gap-3 lg:grid-cols-4">
           {onboardingItems.map((item) => (
             <div
               className="rounded-md border border-slate-200 bg-slate-50 p-4"
@@ -223,9 +199,8 @@ export default function DashboardPage() {
         <StatCard label="Falhas" value={stats.forwards.failed} />
       </section>
 
-      <section className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <section className="mt-4 grid gap-4 sm:grid-cols-2">
         <StatCard label="Forwards com imagem" value={stats.forwards.images} />
-        <StatCard label="Forwards AUTO recentes" value={autoSent} />
         <StatCard label="Grupos sincronizados" value={stats.groups?.total ?? 0} />
       </section>
 

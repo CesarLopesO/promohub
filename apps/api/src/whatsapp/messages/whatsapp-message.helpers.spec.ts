@@ -36,6 +36,15 @@ describe("extractLinks", () => {
     ]);
   });
 
+  it("normalizes Magazine Luiza links without protocol", () => {
+    assert.deepEqual(extractLinks("www.magazineluiza.com.br/produto/p/abc"), [
+      "https://www.magazineluiza.com.br/produto/p/abc",
+    ]);
+    assert.deepEqual(extractLinks("magalu.com.br/produto/p/abc"), [
+      "https://magalu.com.br/produto/p/abc",
+    ]);
+  });
+
   it("captures multiple links in the same text", () => {
     assert.deepEqual(
       extractLinks("Oferta boa https://amzn.to/teste e meli.la/abc."),
@@ -72,10 +81,7 @@ describe("WhatsApp message content", () => {
       },
     } as WAMessage;
 
-    assert.equal(
-      extractMessageText(message),
-      "Oferta https://meli.la/teste",
-    );
+    assert.equal(extractMessageText(message), "Oferta https://meli.la/teste");
   });
 
   it("detects reaction and protocol messages", () => {

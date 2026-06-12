@@ -10,9 +10,17 @@ import {
   centsToReaisInput,
   type PlanPrices,
 } from "@/src/components/admin-plan-prices";
+import {
+  CREDENTIAL_TUTORIAL_MARKETPLACES,
+  EMPTY_CREDENTIAL_TUTORIAL_SETTINGS,
+  pickCredentialTutorialSettings,
+  type CredentialTutorialSettings,
+} from "@/src/components/credential-tutorial-link";
 import { ErrorBox, LoadingBlock, PageHeader } from "@/src/components/ui-state";
 import type { SupportSettings } from "@/src/components/support-channels";
 import { apiFetch } from "@/src/lib/api";
+
+type AdminSettings = SupportSettings & CredentialTutorialSettings;
 
 const DEFAULT_FREE_PLAN_SIGNATURE =
   "🤖 Automatizado por PeppaBot\nAutomação de grupos de ofertas e afiliados.";
@@ -21,6 +29,8 @@ export default function AdminSupportSettingsPage() {
   const [supportEmail, setSupportEmail] = useState("");
   const [supportWhatsappUrl, setSupportWhatsappUrl] = useState("");
   const [freePlanSignature, setFreePlanSignature] = useState("");
+  const [tutorialSettings, setTutorialSettings] =
+    useState<CredentialTutorialSettings>(EMPTY_CREDENTIAL_TUTORIAL_SETTINGS);
   const [basicPrice, setBasicPrice] = useState("");
   const [proPrice, setProPrice] = useState("");
   const [loading, setLoading] = useState(true);
@@ -36,7 +46,7 @@ export default function AdminSupportSettingsPage() {
     async function loadSettings() {
       try {
         const [settings, planPrices] = await Promise.all([
-          apiFetch<SupportSettings>("/admin/settings"),
+          apiFetch<AdminSettings>("/admin/settings"),
           apiFetch<PlanPrices>("/admin/plan-prices"),
         ]);
 
@@ -46,6 +56,7 @@ export default function AdminSupportSettingsPage() {
           setFreePlanSignature(
             settings.freePlanSignature ?? DEFAULT_FREE_PLAN_SIGNATURE,
           );
+          setTutorialSettings(pickCredentialTutorialSettings(settings));
           setBasicPrice(centsToReaisInput(planPrices.BASIC));
           setProPrice(centsToReaisInput(planPrices.PRO));
         }
@@ -78,12 +89,13 @@ export default function AdminSupportSettingsPage() {
     setError(null);
 
     try {
-      const result = await apiFetch<SupportSettings>("/admin/settings", {
+      const result = await apiFetch<AdminSettings>("/admin/settings", {
         method: "PATCH",
         body: JSON.stringify({
           supportEmail,
           supportWhatsappUrl,
           freePlanSignature,
+          ...tutorialSettings,
         }),
       });
 
@@ -92,6 +104,7 @@ export default function AdminSupportSettingsPage() {
       setFreePlanSignature(
         result.freePlanSignature ?? DEFAULT_FREE_PLAN_SIGNATURE,
       );
+      setTutorialSettings(pickCredentialTutorialSettings(result));
       setSaved(true);
     } catch (err) {
       setError(
@@ -180,6 +193,82 @@ export default function AdminSupportSettingsPage() {
                 {freePlanSignature.length}/300 caracteres
               </span>
             </label>
+
+            <section className="mt-6 border-t border-slate-200 pt-5">
+              <h2 className="text-base font-semibold text-slate-950">
+                Tutoriais de credenciais
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Configure as instruções e o vídeo exibidos em cada marketplace.
+              </p>
+
+              <div className="mt-4 grid gap-5 xl:grid-cols-2">
+                {CREDENTIAL_TUTORIAL_MARKETPLACES.map(
+                  ({ label, titleKey, bodyKey, videoUrlKey }) => (
+                    <fieldset
+                      className="rounded-lg border border-slate-200 p-4"
+                      key={titleKey}
+                    >
+                      <legend className="px-1 text-sm font-semibold text-slate-950">
+                        {label}
+                      </legend>
+
+                      <label className="block text-sm font-medium text-slate-700">
+                        Título
+                        <input
+                          className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
+                          maxLength={120}
+                          onChange={(event) =>
+                            setTutorialSettings((current) => ({
+                              ...current,
+                              [titleKey]: event.target.value,
+                            }))
+                          }
+                          placeholder={`Como obter suas credenciais ${label}`}
+                          type="text"
+                          value={tutorialSettings[titleKey]}
+                        />
+                      </label>
+
+                      <label className="mt-4 block text-sm font-medium text-slate-700">
+                        Texto do tutorial
+                        <textarea
+                          className="mt-1 min-h-36 w-full resize-y rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-950"
+                          maxLength={3000}
+                          onChange={(event) =>
+                            setTutorialSettings((current) => ({
+                              ...current,
+                              [bodyKey]: event.target.value,
+                            }))
+                          }
+                          placeholder={
+                            "1. Acesse o portal de afiliados.\n2. Faça login.\n3. Copie sua credencial.\n4. Cole no PeppaBot."
+                          }
+                          value={tutorialSettings[bodyKey]}
+                        />
+                      </label>
+
+                      <label className="mt-4 block text-sm font-medium text-slate-700">
+                        URL do vídeo
+                        <input
+                          className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-slate-950"
+                          maxLength={500}
+                          onChange={(event) =>
+                            setTutorialSettings((current) => ({
+                              ...current,
+                              [videoUrlKey]: event.target.value,
+                            }))
+                          }
+                          placeholder="https://youtube.com/watch?v=..."
+                          type="url"
+                          value={tutorialSettings[videoUrlKey]}
+                        />
+                      </label>
+                    </fieldset>
+                  ),
+                )}
+              </div>
+            </section>
 
             <div className="mt-6 flex flex-wrap items-center gap-3">
               <Button disabled={saving} type="submit">
