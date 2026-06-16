@@ -97,6 +97,8 @@ function makeService(options?: {
     canForward?: boolean;
     reason?: string;
     warning?: string;
+    resolvedUrl?: string;
+    affiliateUrl?: string;
   }>;
   sessionStatus?: string;
   sendMessageError?: Error;
@@ -1639,7 +1641,7 @@ describe("MessageRoutesService", () => {
     );
   });
 
-  it("auto forward skips when any Mercado Livre link fails conversion", async () => {
+  it("auto forward sends original text fallback when Mercado Livre product is not found", async () => {
     const { forwardingService, forwarded, sentMessages } = makeService({
       routes: [makeRoute()],
       messages: [
@@ -1666,10 +1668,21 @@ describe("MessageRoutesService", () => {
           marketplace: Marketplace.MERCADO_LIVRE,
           changed: false,
           canForward: false,
-          reason: "MERCADO_LIVRE_GENERATION_FAILED",
+          reason: "MERCADO_LIVRE_PRODUCT_NOT_FOUND",
         },
       ],
     });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+        extractMercadoLivreFallbackImageUrl: () => Promise<string | null>;
+      }
+    ).waitRandomDelay = async () => undefined;
+    (
+      forwardingService as unknown as {
+        extractMercadoLivreFallbackImageUrl: () => Promise<string | null>;
+      }
+    ).extractMercadoLivreFallbackImageUrl = async () => null;
 
     const { logs, result: response } = await captureLogs(() =>
       forwardingService.forwardMessageById("test-user", "message-id", {
@@ -1677,31 +1690,95 @@ describe("MessageRoutesService", () => {
       }),
     );
 
-    assert.equal(response.sentCount, 0);
-    assert.equal(response.skippedCount, 1);
-    assert.equal(response.results[0]?.error, "MERCADO_LIVRE_GENERATION_FAILED");
+    assert.equal(response.sentCount, 1);
+    assert.equal(response.skippedCount, 0);
     assert.equal(
       response.results[0]?.reason,
-      ForwardSkipReason.ML_GENERATION_FAILED,
+      ForwardSkipReason.ML_FALLBACK_ORIGINAL_SENT,
     );
-    assert.equal(forwarded[0]?.status, "SKIPPED");
-    assert.equal(forwarded[0]?.reason, ForwardSkipReason.ML_GENERATION_FAILED);
-    assert.equal(forwarded[0]?.error, "MERCADO_LIVRE_GENERATION_FAILED");
+    assert.equal(forwarded[0]?.status, "SENT_TEXT_FALLBACK");
+    assert.equal(
+      forwarded[0]?.reason,
+      ForwardSkipReason.ML_FALLBACK_ORIGINAL_SENT,
+    );
+    assert.equal(forwarded[0]?.rewrittenText, "https://meli.la/good https://meli.la/bad");
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      "https://meli.la/good https://meli.la/bad",
+    );
     assert.ok(
       logs.some(
         (log) =>
-          log.includes("[MESSAGE_FORWARD] skipped") &&
+          log.includes("[MESSAGE_FORWARD] fallback") &&
           log.includes("sessionId=wa_xxx") &&
           log.includes("sourceGroupJid=source@g.us") &&
-          log.includes("destinationGroupJid=destination@g.us") &&
           log.includes("messageId=message-id") &&
-          log.includes(`reason=${ForwardSkipReason.ML_GENERATION_FAILED}`),
+          log.includes(`reason=${ForwardSkipReason.ML_FALLBACK_ORIGINAL_SENT}`),
       ),
     );
-    assert.deepEqual(sentMessages, []);
   });
 
-  it("auto forward skips when generation from the selected candidate fails", async () => {
+  it("auto forward sends Mercado Livre media fallback when a fallback image exists", async () => {
+    const originalUrl = "https://meli.la/social";
+    const fallbackImageUrl = "https://http2.mlstatic.com/product.jpg";
+    const { forwardingService, forwarded, sentMessages } = makeService({
+      routes: [makeRoute()],
+      messages: [
+        {
+          id: "message-id",
+          sessionId: "wa_xxx",
+          groupJid: "source@g.us",
+          text: `Oferta imperdivel ${originalUrl}`,
+          links: [originalUrl],
+        },
+      ],
+      rewrittenText: "",
+      rewriteResults: [
+        {
+          originalUrl,
+          resolvedUrl: "https://www.mercadolivre.com.br/produto/p/MLB123",
+          rewrittenUrl: originalUrl,
+          marketplace: Marketplace.MERCADO_LIVRE,
+          changed: false,
+          canForward: false,
+          reason: "ML_GENERATION_FAILED",
+        },
+      ],
+    });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+        extractMercadoLivreFallbackImageUrl: () => Promise<string | null>;
+      }
+    ).waitRandomDelay = async () => undefined;
+    (
+      forwardingService as unknown as {
+        extractMercadoLivreFallbackImageUrl: () => Promise<string | null>;
+      }
+    ).extractMercadoLivreFallbackImageUrl = async () => fallbackImageUrl;
+
+    const response = await forwardingService.forwardMessageById(
+      "test-user",
+      "message-id",
+      { mode: "auto" },
+    );
+
+    assert.equal(response.sentCount, 1);
+    assert.equal(response.results[0]?.status, "SENT_MEDIA_FALLBACK");
+    assert.equal(
+      response.results[0]?.reason,
+      ForwardSkipReason.ML_FALLBACK_ORIGINAL_SENT,
+    );
+    assert.equal(forwarded[0]?.status, "SENT_MEDIA_FALLBACK");
+    assert.equal(forwarded[0]?.sentMessageType, "image_fallback");
+    assert.equal(forwarded[0]?.mediaForwarded, true);
+    assert.deepEqual(sentMessages[0]?.content, {
+      image: { url: fallbackImageUrl },
+      caption: `Oferta imperdivel ${originalUrl}\nhttps://www.mercadolivre.com.br/produto/p/MLB123`,
+    });
+  });
+
+  it("auto forward sends text fallback when Mercado Livre generation fails", async () => {
     const { forwardingService, forwarded, sentMessages } = makeService({
       routes: [makeRoute()],
       messages: [
@@ -1724,6 +1801,17 @@ describe("MessageRoutesService", () => {
         },
       ],
     });
+    (
+      forwardingService as unknown as {
+        waitRandomDelay: () => Promise<void>;
+        extractMercadoLivreFallbackImageUrl: () => Promise<string | null>;
+      }
+    ).waitRandomDelay = async () => undefined;
+    (
+      forwardingService as unknown as {
+        extractMercadoLivreFallbackImageUrl: () => Promise<string | null>;
+      }
+    ).extractMercadoLivreFallbackImageUrl = async () => null;
 
     const response = await forwardingService.forwardMessageById(
       "test-user",
@@ -1731,9 +1819,16 @@ describe("MessageRoutesService", () => {
       { mode: "auto" },
     );
 
-    assert.equal(response.sentCount, 0);
-    assert.equal(forwarded[0]?.status, "SKIPPED");
-    assert.deepEqual(sentMessages, []);
+    assert.equal(response.sentCount, 1);
+    assert.equal(forwarded[0]?.status, "SENT_TEXT_FALLBACK");
+    assert.equal(
+      forwarded[0]?.reason,
+      ForwardSkipReason.ML_FALLBACK_ORIGINAL_SENT,
+    );
+    assert.equal(
+      (sentMessages[0]?.content as { text?: string }).text,
+      "https://meli.la/social",
+    );
   });
 
   it("auto forward sends a short URL generated from a social candidate", async () => {
@@ -2100,7 +2195,7 @@ describe("MessageRoutesService", () => {
 
     assert.equal(response.sentCount, 0);
     assert.equal(response.skippedCount, 1);
-    assert.equal(response.results[0]?.error, "MERCADO_LIVRE_GENERATION_FAILED");
+    assert.equal(response.results[0]?.error, "MERCADO_LIVRE_LEGACY_NOT_VERIFIED");
     assert.deepEqual(sentMessages, []);
   });
 

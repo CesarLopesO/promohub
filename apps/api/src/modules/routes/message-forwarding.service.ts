@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import axios from "axios";
 
 import { AffiliateLinkRewriterService } from "../affiliate/affiliate-link-rewriter.service";
 import { Marketplace } from "../affiliate/helpers/detect-marketplace";
@@ -25,9 +26,13 @@ import { PlanLimitsService } from "../plans/plan-limits.service";
 
 const FORWARDED_STATUS_SENT = "SENT";
 const FORWARDED_STATUS_SENT_TEXT_FALLBACK = "SENT_TEXT_FALLBACK";
+const FORWARDED_STATUS_SENT_MEDIA_FALLBACK = "SENT_MEDIA_FALLBACK";
 const FORWARDED_STATUS_FAILED = "FAILED";
 const FORWARDED_STATUS_SKIPPED = "SKIPPED";
 const FORWARDED_STATUS_SKIPPED_ALREADY_SENT = "SKIPPED_ALREADY_SENT";
+const ML_FALLBACK_IMAGE_TIMEOUT_MS = 5_000;
+const ML_FALLBACK_HTML_LIMIT_BYTES = 256 * 1024;
+const ML_FALLBACK_IMAGE_LIMIT_BYTES = 8 * 1024 * 1024;
 
 type ForwardMode = "manual" | "auto";
 
@@ -95,6 +100,7 @@ export class MessageForwardingService {
 
     const links = this.readLinks(message.links);
     const whatsappLinks = detectWhatsAppInviteLinks(message.text ?? "");
+    let forceOriginalFallback = false;
 
     if (mode === "auto" && links.length === 0 && whatsappLinks.length === 0) {
       this.logOperational("AUTO_FORWARD", "skipped", {
@@ -172,28 +178,46 @@ export class MessageForwardingService {
 
     if (mercadoLivreRewrites.length > 0 && !allMercadoLivreRewritesSucceeded) {
       const providerReason =
+        mercadoLivreRewrites.find(
+          (rewrite) =>
+            !rewrite.changed ||
+            rewrite.canForward !== true ||
+            !(rewrite.affiliateUrl ?? rewrite.rewrittenUrl).startsWith(
+              "https://meli.la/",
+            ),
+        )?.reason ??
         rewritePreview.reason ??
-        mercadoLivreRewrites.find((rewrite) => !rewrite.changed)?.reason ??
         "MERCADO_LIVRE_GENERATION_FAILED";
       const reason = this.normalizeAffiliateReason(
         Marketplace.MERCADO_LIVRE,
         providerReason,
       );
-      this.logSkippedForRoutes(message, routes, reason);
 
-      return this.persistSkippedForRoutes({
-        userId: normalizedUserId,
-        message,
-        routes,
-        mode,
-        rewrittenText:
-          rewritePreview.rewrittenText ??
-          rewritePreview.originalText ??
-          message.text ??
-          "",
-        reason,
-        errorDetail: providerReason,
-      });
+      if (this.isMercadoLivreFallbackReason(providerReason, reason)) {
+        forceOriginalFallback = true;
+        this.logOperational("MESSAGE_FORWARD", "fallback", {
+          sessionId: message.sessionId,
+          sourceGroupJid: message.groupJid,
+          messageId: message.id,
+          reason: ForwardSkipReason.ML_FALLBACK_ORIGINAL_SENT,
+        });
+      } else {
+        this.logSkippedForRoutes(message, routes, reason);
+
+        return this.persistSkippedForRoutes({
+          userId: normalizedUserId,
+          message,
+          routes,
+          mode,
+          rewrittenText:
+            rewritePreview.rewrittenText ??
+            rewritePreview.originalText ??
+            message.text ??
+            "",
+          reason,
+          errorDetail: providerReason,
+        });
+      }
     }
 
     const failedAmazonRewrite = rewritePreview.rewrites.find(
@@ -259,6 +283,7 @@ export class MessageForwardingService {
 
     if (
       mode === "auto" &&
+      !forceOriginalFallback &&
       !rewritePreview.rewrites.some(
         (rewrite) => rewrite.changed || rewrite.canForward === true,
       ) &&
@@ -290,8 +315,12 @@ export class MessageForwardingService {
       });
     }
 
-    const affiliateRewrittenText =
-      rewritePreview.rewrittenText ?? rewritePreview.originalText ?? "";
+    const affiliateRewrittenText = forceOriginalFallback
+      ? this.buildMercadoLivreFallbackText(message.text ?? "", rewritePreview)
+      : (rewritePreview.rewrittenText ?? rewritePreview.originalText ?? "");
+    const fallbackImageUrl = forceOriginalFallback
+      ? await this.extractMercadoLivreFallbackImageUrl(rewritePreview)
+      : null;
     const session = await this.prisma.whatsAppSession.findFirst({
       where: {
         sessionId: message.sessionId,
@@ -442,6 +471,12 @@ export class MessageForwardingService {
           destinationGroupJid,
           message,
           rewrittenText,
+          forceOriginalFallback
+            ? {
+                imageUrl: fallbackImageUrl,
+                reason: ForwardSkipReason.ML_FALLBACK_ORIGINAL_SENT,
+              }
+            : undefined,
         );
         await this.prisma.forwardedMessage.create({
           data: {
@@ -536,7 +571,8 @@ export class MessageForwardingService {
       sentCount: results.filter(
         (result) =>
           result.status === FORWARDED_STATUS_SENT ||
-          result.status === FORWARDED_STATUS_SENT_TEXT_FALLBACK,
+          result.status === FORWARDED_STATUS_SENT_TEXT_FALLBACK ||
+          result.status === FORWARDED_STATUS_SENT_MEDIA_FALLBACK,
       ).length,
       failedCount: results.filter(
         (result) => result.status === FORWARDED_STATUS_FAILED,
@@ -627,6 +663,7 @@ export class MessageForwardingService {
       rawMessage: Prisma.JsonValue | null;
     },
     rewrittenText: string,
+    fallback?: { imageUrl?: string | null; reason: ForwardSkipReasonValue },
   ): Promise<{
     status: string;
     sentMessageType: string;
@@ -635,6 +672,43 @@ export class MessageForwardingService {
     sentProviderRaw?: Prisma.InputJsonValue;
     reason?: ForwardSkipReasonValue;
   }> {
+    if (fallback?.imageUrl) {
+      const providerResult = await socket.sendMessage(destinationGroupJid, {
+        image: { url: fallback.imageUrl },
+        caption: rewrittenText,
+      });
+
+      return this.toSuccessfulSendResult(
+        message,
+        destinationGroupJid,
+        providerResult,
+        {
+          status: FORWARDED_STATUS_SENT_MEDIA_FALLBACK,
+          sentMessageType: "image_fallback",
+          mediaForwarded: true,
+          reason: fallback.reason,
+        },
+      );
+    }
+
+    if (fallback) {
+      const providerResult = await socket.sendMessage(destinationGroupJid, {
+        text: rewrittenText,
+      });
+
+      return this.toSuccessfulSendResult(
+        message,
+        destinationGroupJid,
+        providerResult,
+        {
+          status: FORWARDED_STATUS_SENT_TEXT_FALLBACK,
+          sentMessageType: "text_fallback",
+          mediaForwarded: false,
+          reason: fallback.reason,
+        },
+      );
+    }
+
     if (message.messageType !== "image" || !message.hasMedia) {
       const providerResult = await socket.sendMessage(destinationGroupJid, {
         text: rewrittenText,
@@ -861,6 +935,196 @@ export class MessageForwardingService {
     return (
       reason === "INVALID_AMAZON_URL" || Boolean(reason?.startsWith("AMAZON_"))
     );
+  }
+
+  private isMercadoLivreFallbackReason(
+    providerReason: string | undefined,
+    normalizedReason: ForwardSkipReasonValue,
+  ): boolean {
+    return (
+      normalizedReason === ForwardSkipReason.ML_GENERATION_FAILED &&
+      [
+        "MERCADO_LIVRE_PRODUCT_NOT_FOUND",
+        "IMAGE_NOT_FOUND",
+        "SOCIAL_EXTRACTION_FAILED",
+        "ML_GENERATION_FAILED",
+        "MERCADO_LIVRE_GENERATION_FAILED",
+      ].includes(providerReason ?? "")
+    );
+  }
+
+  private buildMercadoLivreFallbackText(
+    originalText: string,
+    rewritePreview: {
+      rewrites: Array<{
+        marketplace: Marketplace;
+        originalUrl: string;
+        resolvedUrl?: string;
+      }>;
+    },
+  ): string {
+    const fallbackUrl = rewritePreview.rewrites
+      .filter((rewrite) => rewrite.marketplace === Marketplace.MERCADO_LIVRE)
+      .map((rewrite) => rewrite.resolvedUrl ?? rewrite.originalUrl)
+      .find((url) => this.isHttpUrl(url));
+    const text = originalText.trim() ? originalText : fallbackUrl ?? "";
+
+    if (!fallbackUrl || text.includes(fallbackUrl)) {
+      return text;
+    }
+
+    return `${text}\n${fallbackUrl}`;
+  }
+
+  private async extractMercadoLivreFallbackImageUrl(rewritePreview: {
+    rewrites: Array<{
+      marketplace: Marketplace;
+      originalUrl: string;
+      resolvedUrl?: string;
+    }>;
+  }): Promise<string | null> {
+    const targetUrl = rewritePreview.rewrites
+      .filter((rewrite) => rewrite.marketplace === Marketplace.MERCADO_LIVRE)
+      .map((rewrite) => rewrite.resolvedUrl ?? rewrite.originalUrl)
+      .find((url) => this.isHttpUrl(url));
+
+    if (!targetUrl) {
+      return null;
+    }
+
+    try {
+      const response = await axios.get<string>(targetUrl, {
+        headers: {
+          Accept: "text/html,application/xhtml+xml",
+          "User-Agent":
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        },
+        maxBodyLength: ML_FALLBACK_HTML_LIMIT_BYTES,
+        maxContentLength: ML_FALLBACK_HTML_LIMIT_BYTES,
+        maxRedirects: 3,
+        responseType: "text",
+        timeout: ML_FALLBACK_IMAGE_TIMEOUT_MS,
+        validateStatus: (status) => status >= 200 && status < 300,
+      });
+      const contentType = String(response.headers["content-type"] ?? "");
+
+      if (contentType && !contentType.toLowerCase().includes("html")) {
+        return null;
+      }
+
+      const html = String(response.data).slice(0, ML_FALLBACK_HTML_LIMIT_BYTES);
+
+      for (const candidate of this.extractImageCandidatesFromHtml(
+        html,
+        response.request?.res?.responseUrl ?? targetUrl,
+      )) {
+        if (await this.isValidRemoteImageUrl(candidate)) {
+          return candidate;
+        }
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
+  }
+
+  private extractImageCandidatesFromHtml(
+    html: string,
+    baseUrl: string,
+  ): string[] {
+    const candidates = new Set<string>();
+    const metaPattern =
+      /<meta\b[^>]*(?:property|name)=["'](?:og:image|twitter:image|image|twitter:image:src)["'][^>]*>/gi;
+
+    for (const match of html.matchAll(metaPattern)) {
+      const content = this.readHtmlAttribute(match[0], "content");
+      const resolved = content ? this.resolveHttpUrl(content, baseUrl) : null;
+
+      if (resolved) {
+        candidates.add(resolved);
+      }
+    }
+
+    const imgPattern = /<img\b[^>]*>/gi;
+
+    for (const match of html.matchAll(imgPattern)) {
+      const tag = match[0];
+      const source =
+        this.readHtmlAttribute(tag, "src") ??
+        this.readHtmlAttribute(tag, "data-src") ??
+        this.readHtmlAttribute(tag, "data-original") ??
+        this.readHtmlAttribute(tag, "srcset")?.split(/\s+/)[0];
+      const resolved = source ? this.resolveHttpUrl(source, baseUrl) : null;
+
+      if (resolved && this.looksLikeProductImage(tag, resolved)) {
+        candidates.add(resolved);
+      }
+    }
+
+    return [...candidates];
+  }
+
+  private readHtmlAttribute(tag: string, attribute: string): string | null {
+    const escapedAttribute = attribute.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = tag.match(
+      new RegExp(`${escapedAttribute}\\s*=\\s*["']([^"']+)["']`, "i"),
+    );
+
+    return match?.[1]?.trim() || null;
+  }
+
+  private looksLikeProductImage(tag: string, imageUrl: string): boolean {
+    const value = `${tag} ${imageUrl}`.toLowerCase();
+
+    return (
+      value.includes("product") ||
+      value.includes("produto") ||
+      value.includes("ui-pdp") ||
+      value.includes("pictures") ||
+      value.includes("http2.mlstatic.com")
+    );
+  }
+
+  private resolveHttpUrl(value: string, baseUrl: string): string | null {
+    try {
+      const url = new URL(value, baseUrl);
+
+      return ["http:", "https:"].includes(url.protocol) ? url.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async isValidRemoteImageUrl(imageUrl: string): Promise<boolean> {
+    if (!this.isHttpUrl(imageUrl)) {
+      return false;
+    }
+
+    try {
+      const response = await axios.head(imageUrl, {
+        maxRedirects: 3,
+        timeout: ML_FALLBACK_IMAGE_TIMEOUT_MS,
+        validateStatus: (status) => status >= 200 && status < 300,
+      });
+      const contentType = String(response.headers["content-type"] ?? "");
+      const contentLength = Number(response.headers["content-length"] ?? 0);
+
+      return (
+        contentType.toLowerCase().startsWith("image/") &&
+        (!contentLength || contentLength <= ML_FALLBACK_IMAGE_LIMIT_BYTES)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private isHttpUrl(value: string): boolean {
+    try {
+      return ["http:", "https:"].includes(new URL(value).protocol);
+    } catch {
+      return false;
+    }
   }
 
   private normalizeAffiliateReason(
